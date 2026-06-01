@@ -1,5 +1,7 @@
 # Human Steering Layer (Human-in-the-Loop)
 
+> **Canonical numbering = `flow-diagram.md` (H0–H6).** This doc is the explanatory companion. Reconciliation (2026-06-01): the canonical H0–H6 model adds two gates beyond the 6 described below — **H5 Call Help** (AI hits a hard blocker → list the minimal necessary inputs; previously folded into §8.4) and **H6 Final Review** (human confirms the final memo is usable BEFORE Done — a post-memo gate, distinct from "confirm before synthesize"). Also: in the canonical loop the order is **Source Critic → Skeptic → Albert audit** (Albert audits the already-critiqued state). Treat `flow-diagram.md` as authoritative where they differ.
+
 > User directive 2026-06-01. Elevates HITL from scattered spec points (§8.1, §9, §13, `steering_events`) to a **first-class layer** that sits ABOVE the AI loop. The AI loop runs autonomously, but the moment it touches **direction, decision, BU preference, restricted/internal data, or source judgment**, it must enter the Human Steering Layer.
 
 ## HITL is NOT "review the final report." It lives in 7 places:

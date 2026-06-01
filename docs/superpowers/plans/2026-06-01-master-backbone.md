@@ -89,6 +89,10 @@ Update artifacts; produce concise summaries; convert evidence into executive lan
 **MVP graph nodes (must LOOP, not run-once):** `intake_node, issue_expansion_node, research_planning_node, research_worker_node, evidence_normalizer_node, albert_thought_audit_node, counterargument_node, source_critic_node, artifact_update_node, readiness_scoring_node, chief_of_staff_decision_node, human_pull_node, human_push_node, synthesis_node, terminal_node`.
 **COS decision output schema:** `{decision, reason, selected_issue_ids[], recommended_next_queries[], human_message, default_action_if_no_response}`.
 
+> **CANONICAL FLOW = `docs/spec/flow-diagram.md` (user-provided 2026-06-01, colleague-shareable).** Two conformance refinements adopted there over the raw §18 node order:
+> - **Loop order:** Source Critic → Skeptic → **Albert audit LAST** (Albert audits the already-critiqued state), i.e. `... → evidence_normalizer → source_critic → counterargument(skeptic) → albert_thought_audit → artifact_update → ...`.
+> - **HITL = 7 touchpoints H0–H6** (see `human-steering-layer.md`): H0 Preflight, H1 Pull Direction, H2 Call External Decision, H3 Push Human Task, H4 Ad-hoc Steering, **H5 Call Help** (hard blocker → minimal necessary inputs — now a distinct router branch), **H6 Final Review** (human confirms the final memo before Done — NEW post-memo gate). The `pull_human` action is split into the H1/H2/H5 flavors.
+
 ## A8. Auto mode (§8) — overnight-style
 
 Not reckless autonomy: after enough initial clarification, run multiple research/audit/update cycles without constant human input.
