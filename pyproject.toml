@@ -32,6 +32,9 @@ cos = "cn5_research_cos.cli:app"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"cn5_research_cos.sot.prompts" = ["*.md"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
