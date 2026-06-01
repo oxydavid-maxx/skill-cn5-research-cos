@@ -293,7 +293,7 @@ def revise_brief(
 
     conflict = detect_conflict(current, {field: new_value}, source="revise-brief")
     if conflict is not None:
-        console.print(f"[yellow]⚠ 偵測到與 SOT 矛盾（不靜默覆蓋）[/yellow] "
+        console.print(f"[yellow]! 偵測到與 SOT 矛盾（不靜默覆蓋）[/yellow] "
                       f"field={conflict.field} severity={conflict.severity.value}")
         console.print(f"  SOT: {conflict.sot_value!r}")
         console.print(f"  新值: {conflict.new_value!r}")

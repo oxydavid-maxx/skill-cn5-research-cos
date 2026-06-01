@@ -82,6 +82,14 @@ def test_revise_brief_bumps_version_and_supersedes(tmp_path, monkeypatch):
     r = runner.invoke(app, ["revise-brief", rid, "--field", "deliverable",
                             "--value", "一頁式 memo"])
     assert r.exit_code == 0, r.output
+    # the deliverable change contradicts the SOT -> conflict surfaced, not silent
+    assert "矛盾" in r.output
+    # CLI status output must stay encodable on a legacy console codepage (cp950)
+    # so it cannot crash a real Windows terminal mid-command. Drop the Chinese
+    # brief body (always non-ascii) and check only the status/marker lines.
+    status_lines = [ln for ln in r.output.splitlines() if "矛盾" in ln or "brief.v" in ln]
+    for ln in status_lines:
+        ln.encode("cp950")  # raises UnicodeEncodeError if a non-cp950 glyph slipped in
 
     v2 = load_latest(rid, base_dir=str(tmp_path))
     assert v2.version == 2
