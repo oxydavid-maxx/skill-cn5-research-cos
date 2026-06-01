@@ -5,6 +5,7 @@
 ## Boundary
 
 - **Albert is a separate, independently-versioned skill:** `github.com/oxydavid-maxx/skill-cn5-i-am-albert` — a high-standard product/architecture war-room reviewer, grounded in real CN5 Gateway / PM war-room transcripts.
+- **Local checkout (sibling dir):** `D:/D-claude/skill-cn5-i-am-albert/` (as of 2026-06-01: only `.git` + `docs/` — early/in-progress, no code yet).
 - **Built/owned elsewhere.** Status as of 2026-06-01: **partial / in-progress, interface still changing.**
 - **This cockpit only CONSUMES it.** Building/finishing the Albert skill is OUT OF SCOPE for `skill-cn5-research-cos`.
 
