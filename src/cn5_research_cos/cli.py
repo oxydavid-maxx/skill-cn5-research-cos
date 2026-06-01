@@ -12,7 +12,7 @@ import typer
 from rich.console import Console
 
 from . import render
-from .graph import build_graph
+from .graph import compile_with_checkpoint
 from .models import Decision, ResearchState
 from .state import GraphState
 from .store import load_snapshot, new_run, save_snapshot
@@ -45,10 +45,12 @@ def init(
 
 @app.command()
 def run(
-    question: str = typer.Option(..., "--question", "-q"),
+    question: str = typer.Option(None, "--question", "-q"),
     run_id: str = typer.Option(None, "--run-id"),
     max_iterations: int = typer.Option(8, "--max-iterations"),
     llm: str = typer.Option("mock", "--llm"),
+    resume: bool = typer.Option(False, "--resume",
+                                help="從上次 checkpoint 續跑（需 --run-id），不重頭跑"),
 ):
     """跑完整研究收斂迴圈，逐輪印出中文 summary，最後印停止原因 + 四項 readiness 分數。"""
     if llm != "mock":
@@ -56,40 +58,55 @@ def run(
         raise typer.Exit(code=2)
 
     now = _now()
-    rid = run_id or "run-" + now.replace(":", "").replace("-", "")
     base_dir = _base_dir()
-    initial = ResearchState(run_id=rid, original_question=question,
-                            created_at=now, updated_at=now)
-
-    graph = build_graph().compile()
-    init_state: GraphState = {
-        "research_state": initial,
-        "base_dir": base_dir,
-        "now": now,
-        "max_iterations": max_iterations,
-    }
-    cfg = {"recursion_limit": 100}
 
     final_state: ResearchState | None = None
     last_decision: Decision | None = None
     last_printed_iter = -1
+    cfg_base = {"recursion_limit": 100}
 
-    # Stream node updates; print a Chinese summary once per completed iteration.
-    for chunk in graph.stream(init_state, config=cfg, stream_mode="values"):
-        rs = chunk.get("research_state")
-        if rs is None:
-            continue
-        final_state = rs
-        dec = chunk.get("last_decision")
-        if dec is not None:
-            last_decision = dec
-        if rs.readiness_score is not None and rs.iteration_count != last_printed_iter:
-            console.print(render.iteration_summary(rs))
-            console.print("")
-            last_printed_iter = rs.iteration_count
+    if resume:
+        if not run_id:
+            console.print("[red]--resume 需要 --run-id[/red]")
+            raise typer.Exit(code=2)
+        rid = run_id
+        app_graph, _saver, conn = compile_with_checkpoint(os.path.join(base_dir, rid))
+        cfg = {**cfg_base, "configurable": {"thread_id": rid}}
+        stream_input = None  # replay from checkpoint, do not restart
+    else:
+        if not question:
+            console.print("[red]--question 為必填（除非 --resume）[/red]")
+            raise typer.Exit(code=2)
+        rid = run_id or "run-" + now.replace(":", "").replace("-", "")
+        initial = ResearchState(run_id=rid, original_question=question,
+                                created_at=now, updated_at=now)
+        app_graph, _saver, conn = compile_with_checkpoint(os.path.join(base_dir, rid))
+        cfg = {**cfg_base, "configurable": {"thread_id": rid}}
+        stream_input: GraphState | None = {
+            "research_state": initial,
+            "base_dir": base_dir,
+            "now": now,
+            "max_iterations": max_iterations,
+        }
+
+    try:
+        for chunk in app_graph.stream(stream_input, config=cfg, stream_mode="values"):
+            rs = chunk.get("research_state")
+            if rs is None:
+                continue
+            final_state = rs
+            dec = chunk.get("last_decision")
+            if dec is not None:
+                last_decision = dec
+            if rs.readiness_score is not None and rs.iteration_count != last_printed_iter:
+                console.print(render.iteration_summary(rs))
+                console.print("")
+                last_printed_iter = rs.iteration_count
+    finally:
+        conn.close()
 
     if final_state is None:
-        console.print("[red]迴圈未產生任何狀態[/red]")
+        console.print("[red]迴圈未產生任何狀態（resume 時可能已完成）[/red]")
         raise typer.Exit(code=1)
 
     save_snapshot(final_state, base_dir=base_dir)
