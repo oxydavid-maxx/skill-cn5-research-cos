@@ -37,6 +37,12 @@
 - **Auto mode** `cos run-auto --max-iterations`: runs multiple research/audit/update cycles without constant input; §8.2 allowed / §8.3 forbidden enforced; §8.4 blocker handling (soft→lower-confidence-continue; medium→human-task+continue-adjacent; hard→call-help+pause); default-action-if-no-response after a timeout/turn.
 - **Interactive clarify** (ODR clarify pattern) at scope: `need_clarification?` → ask → resume.
 
+> **SOT / iterative scope clarification (user directive 2026-06-01) — FIRST-CLASS requirement, do NOT model as a one-shot questionnaire.** When a topic first arrives, the `scope → write_brief` front-end (B1) must run a GENUINE back-and-forth clarification dialogue — **high-quality and precise, not lengthy; unlimited rounds, repeating until the problem and direction are genuinely clear** (no fixed question count, never "just ask 2 rounds and move on"). Its output is the **Source-of-Truth (SOT) brief**, written into state (`research_brief`) as the north-star that constrains ALL downstream research + Albert-audit so they cannot drift.
+> - **`superpowers:brainstorming` is NOT the model here** — that is our *dev-process* skill (one-way, one-shot); the cockpit's *runtime* clarification is a multi-turn interrupt()-driven loop that keeps probing until clear.
+> - **Revisable by HITL:** any of the 7 human-steering gates (H0–H6) may come back and amend the SOT brief later.
+> - **Conflict handling:** if a later finding / steering event CONFLICTS with the established SOT, the system must **explicitly surface the conflict and run a human back-and-forth** to resolve it (do not silently overwrite the SOT, do not silently ignore the conflict). Resolution is by discussion-until-clear, not by a round cap.
+> - Acceptance (P3): given an under-specified topic, scope runs >1 clarification round and only proceeds once the brief is confirmed; a later conflict with the brief triggers an explicit human-resolution interrupt, not a silent overwrite.
+
 **DoD / verify:** **Acceptance Test 2** (internal-data need → HumanTask + continue adjacent + mark confidence) and **Acceptance Test 5** (auto mode: multiple iterations, Albert audit each, readiness updated, final state explains stop reason); interrupt/resume round-trips on the existing checkpoint (resume continues, not restarts); §10 auto-mode extra guardrails enforced (>1 cycle, ≥1 adversarial, ≥1 branch/rerank, final scoring).
 
 **Out of scope:** real research engines (P4); memo (P5).

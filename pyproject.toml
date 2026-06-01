@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cn5-research-cos"
+version = "0.1.0"
+description = "Deterministic LangGraph research convergence loop (Chief-of-Staff research cockpit) — Phase 1 spine"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2",
+    "langgraph>=0.2",
+    "langgraph-checkpoint-sqlite>=1",
+    "typer>=0.12",
+    "rich>=13",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+cos = "cn5_research_cos.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
