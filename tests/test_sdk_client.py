@@ -13,13 +13,35 @@ import os
 import pytest
 
 from cn5_research_cos.llm import sdk_client
-from cn5_research_cos.llm.sdk_client import LLMUnavailableError, call_structured, has_api_key
+from cn5_research_cos.llm.sdk_client import (LLMUnavailableError, call_structured,
+                                            call_structured_websearch, has_api_key)
 
 
 _SCHEMA = {
     "type": "object",
     "properties": {"answer": {"type": "string"}},
     "required": ["answer"],
+    "additionalProperties": False,
+}
+
+_SEARCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {"type": "string"},
+                    "url": {"type": "string"},
+                    "title": {"type": "string"},
+                },
+                "required": ["claim"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["findings"],
     "additionalProperties": False,
 }
 
@@ -65,3 +87,49 @@ def test_call_structured_live_smoke():
         schema=_SCHEMA,
     )
     assert isinstance(out, dict) and "answer" in out
+
+
+# --------------------------------------------------------------------------- #
+# websearch path (P2b)
+# --------------------------------------------------------------------------- #
+def test_call_structured_websearch_passes_websearch_tool(monkeypatch):
+    """The websearch path must hand the SDK allowed_tools=['WebSearch'] and
+    max_turns>=4 (tool cycle), while keeping the SAME MCP isolation. We assert
+    those args by capturing what `_query_structured` is called with — and the
+    structured result still flows through unchanged."""
+    captured = {}
+
+    async def _fake_query(**kw):
+        captured.update(kw)
+        return {"text": "", "structured": {"findings": [{"claim": "x"}]}, "is_error": False}
+
+    monkeypatch.setattr(sdk_client, "_query_structured", _fake_query)
+    out = call_structured_websearch("sys", "search the web", _SEARCH_SCHEMA)
+    assert out == {"findings": [{"claim": "x"}]}
+    assert captured.get("allowed_tools") == ["WebSearch"]
+    assert captured.get("max_turns", 0) >= 4
+
+
+def test_call_structured_websearch_raises_on_no_structured(monkeypatch):
+    async def _fake_query(**_kw):
+        return {"text": "no tools used", "structured": None, "is_error": False}
+
+    monkeypatch.setattr(sdk_client, "_query_structured", _fake_query)
+    with pytest.raises(LLMUnavailableError):
+        call_structured_websearch("sys", "user", _SEARCH_SCHEMA)
+
+
+@pytest.mark.llm
+def test_call_structured_websearch_live(monkeypatch):
+    if os.environ.get("CN5_COS_LLM_TESTS") != "1":
+        pytest.skip("set CN5_COS_LLM_TESTS=1 to run live LLM tests")
+    out = call_structured_websearch(
+        system="You research a topic using WebSearch and return findings with sources.",
+        user=("Search the web for the latest news about NVIDIA and return at least one "
+              "finding with its source URL in the 'findings' array."),
+        schema=_SEARCH_SCHEMA,
+    )
+    assert isinstance(out, dict)
+    findings = out.get("findings") or []
+    assert len(findings) >= 1, f"expected >=1 web finding, got {out!r}"
+    assert any(f.get("claim") for f in findings)

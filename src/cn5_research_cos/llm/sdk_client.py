@@ -109,15 +109,16 @@ async def _collect(msg_iter) -> dict[str, Any]:
 
 
 async def _query_structured(
-    *, system: str, user: str, schema: dict, model: str, timeout_sec: int
+    *, system: str, user: str, schema: dict, model: str, timeout_sec: int,
+    allowed_tools: list[str] | None = None, max_turns: int = 3,
 ) -> dict[str, Any]:
     from claude_agent_sdk import ClaudeAgentOptions, query  # imported lazily
 
     options = ClaudeAgentOptions(
         system_prompt=system.rstrip(),
         setting_sources=None,
-        allowed_tools=[],
-        max_turns=3,
+        allowed_tools=list(allowed_tools or []),
+        max_turns=max_turns,
         env=dict(_SDK_ENV),
         model=model,
         output_format={"type": "json_schema", "schema": schema},
@@ -150,31 +151,19 @@ def _retrying(fn, attempts: int, base_wait: float, max_wait: float):
     return _wrapped
 
 
-def call_structured(
-    system: str,
-    user: str,
-    schema: dict,
-    *,
-    model: str | None = None,
-    timeout_sec: int = 300,
-    attempts: int = 5,
+def _call(
+    *, system: str, user: str, schema: dict, model: str | None,
+    timeout_sec: int, attempts: int,
+    allowed_tools: list[str] | None, max_turns: int,
 ) -> dict[str, Any]:
-    """Call Claude (cheap model) for ONE structured-JSON result.
+    """Shared structured-call core (no-tool and with-tool paths funnel here).
 
-    Returns the schema-conformant dict from the StructuredOutput tool block.
-
-    Raises:
-        LLMUnavailableError -- no API key, or the SDK produced no structured
-            output (after retries). The caller decides what to do; this function
-            never returns a fabricated result.
-
-    The narrow LLM node is the ONLY place the model lives; all loop/convergence/
-    stop control stays deterministic in `cn5_ask`.
+    NO env-var auth gate (mirrors escape-mrc/Albert sdk_client): the Agent SDK
+    spawns the `claude` CLI which authenticates via the Claude subscription /
+    OAuth login — an ANTHROPIC_API_KEY is NOT required. If auth genuinely fails,
+    the SDK call below errors and is wrapped in LLMUnavailableError. Never
+    fabricates a result.
     """
-    # NO env-var auth gate (mirrors escape-mrc/Albert sdk_client): the Agent SDK
-    # spawns the `claude` CLI which authenticates via the Claude subscription /
-    # OAuth login — an ANTHROPIC_API_KEY is NOT required. If auth genuinely fails,
-    # the SDK call below errors and is wrapped in LLMUnavailableError.
     used_model = model or DEFAULT_MODEL
 
     def _once() -> dict[str, Any]:
@@ -182,6 +171,7 @@ def call_structured(
             _query_structured(
                 system=system, user=user, schema=schema,
                 model=used_model, timeout_sec=timeout_sec,
+                allowed_tools=allowed_tools, max_turns=max_turns,
             )
         )
 
@@ -197,3 +187,61 @@ def call_structured(
             f"(is_error={result.get('is_error')}, text_len={len(result.get('text', ''))})"
         )
     return structured
+
+
+def call_structured(
+    system: str,
+    user: str,
+    schema: dict,
+    *,
+    model: str | None = None,
+    timeout_sec: int = 300,
+    attempts: int = 5,
+) -> dict[str, Any]:
+    """Call Claude (cheap model) for ONE structured-JSON result (NO tools).
+
+    Returns the schema-conformant dict from the StructuredOutput tool block.
+
+    Raises:
+        LLMUnavailableError -- no API key, or the SDK produced no structured
+            output (after retries). The caller decides what to do; this function
+            never returns a fabricated result.
+
+    The narrow LLM node is the ONLY place the model lives; all loop/convergence/
+    stop control stays deterministic in `cn5_ask`.
+    """
+    return _call(
+        system=system, user=user, schema=schema, model=model,
+        timeout_sec=timeout_sec, attempts=attempts,
+        allowed_tools=None, max_turns=3,
+    )
+
+
+def call_structured_websearch(
+    system: str,
+    user: str,
+    schema: dict,
+    *,
+    model: str | None = None,
+    timeout_sec: int = 300,
+    attempts: int = 5,
+    max_turns: int = 4,
+) -> dict[str, Any]:
+    """Call Claude (cheap model) WITH the built-in WebSearch tool, then return ONE
+    structured-JSON result.
+
+    WebSearch is a *built-in* SDK tool (not MCP), so the P2a `--strict-mcp-config`
+    + empty `mcp_servers` isolation does NOT block it (verified live in this env).
+    A tool cycle (search -> read result -> emit StructuredOutput) needs several
+    turns, hence `max_turns>=4`.
+
+    Same failure policy as `call_structured`: raises `LLMUnavailableError` rather
+    than fabricating when no structured output is produced.
+    """
+    if max_turns < 4:
+        max_turns = 4
+    return _call(
+        system=system, user=user, schema=schema, model=model,
+        timeout_sec=timeout_sec, attempts=attempts,
+        allowed_tools=["WebSearch"], max_turns=max_turns,
+    )
