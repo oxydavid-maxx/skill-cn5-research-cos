@@ -6,7 +6,24 @@
 
 ---
 
-## P2 — Real Albert (external skill) + real LLM brains
+## P2 REPARTITION + fork decisions (2026-06-01, multi-round discussion)
+
+P2 is **split into two independent phases P2a + P2b** (P3–P6 numbering UNCHANGED). Fork decisions:
+- **F1 Albert source:** P2b uses a **self-written cheap-LLM Albert simulator** that emits an `albert_challenge`-shaped dict and wires ONLY to the external skill's frozen **`to_audit_result` contract** (`skill-cn5-i-am-albert/albert/cockpit_contract.py`, schema `schemas/albert_challenge.schema.json`). The real external skill (now fully built, 73 tests, contract designed against our `AuditResult`) is flipped in at **P6**, not P2.
+- **F2 Transport:** **Claude Agent SDK** (`query()` + `output_format=json_schema`), reusing the proven `sdk_client` pattern from escape-mrc / the Albert skill. Runtime = standalone process (no nested-session #573).
+- **F3 Testing:** **cheap model, run real LLM live** (no cassette/mock machinery). Assertions on structure/contract/schema/behavior, not verbatim text. LLM tests are **API-key-gated** (skip without a key). P1's pure-logic tests stay deterministic.
+- **F5 Model/cost:** cheapest model (Haiku-tier) for all P2 brains; `ALBERT_FAST_MODEL`-style cheap routing.
+- **F6 SOT:** **reuse `skill-deep-research` Socratic engine** (`agents/socratic_mentor_agent.md` + `references/socratic_questioning_framework.md` — multi-round, 1–2 Q/turn, 4 convergence signals, anti-stagnation caps, INSIGHT→brief compiler) + a thin custom SOT-lifecycle wrapper (persist/version/revise/conflict-surface — the part no existing tool gives). ODR clarify is one-shot → borrow only its brief-writer prompt. NOT `superpowers:brainstorming` (that is a dev-process skill, one-shot).
+
+### P2a — SOT Clarification Front-end (next to build; own detailed spec)
+**Goal:** when a topic arrives, run a GENUINE multi-round clarifying dialogue (unlimited rounds until clear) → produce + persist the **SOT `research_brief`** that constrains all downstream work; revisable; conflicts surfaced for human discussion. Runnable in P2a via CLI back-and-forth (real interrupt/auto = P3). Detailed spec: `docs/superpowers/specs/2026-06-01-phase2a-sot-clarification-design.md`.
+
+### P2b — Real LLM brains + Albert simulator (after P2a; own detailed spec)
+**Goal:** swap the P1 stub brains in the loop for real cheap-LLM ones (issue-expander w/ grounded decomposition, researcher, source-critic, skeptic, compress, scorer, COS reasoning) behind the same Protocols + `--llm real` hook; Albert simulator → `to_audit_result` contract; typed null-exit critique. DoD: Acceptance Test 3; the loop runs on real cheap LLM and still converges/stops correctly.
+
+---
+
+## (original) P2 — Real Albert (external skill) + real LLM brains  [superseded by P2a+P2b above; kept for reference]
 
 **Goal:** swap P1's deterministic stub brains for real ones via Claude Agent SDK, behind the SAME `brains/` Protocols + injection hook (`--llm real`). The loop, state, persistence, decision logic, guardrails are UNCHANGED from P1.
 
