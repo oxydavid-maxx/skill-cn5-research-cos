@@ -13,10 +13,18 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=1",
     "typer>=0.12",
     "rich>=13",
+    # P2a SOT clarification front-end:
+    #   cn5-ask : the reusable iterate-until-converged engine (skill-cn5-ask).
+    #             Installed editable from D:/D-claude/skills/skill-cn5-ask;
+    #             `import cn5_ask`. Declared here so the dependency is explicit.
+    "cn5-ask",
+    #   claude-agent-sdk / tenacity : the narrow LLM step + retry/backoff.
+    "claude-agent-sdk>=0.1",
+    "tenacity>=8",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "jsonschema>=4"]
 
 [project.scripts]
 cos = "cn5_research_cos.cli:app"
@@ -27,3 +35,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "llm: live LLM test; requires ANTHROPIC_API_KEY (skipped without a key)",
+]
