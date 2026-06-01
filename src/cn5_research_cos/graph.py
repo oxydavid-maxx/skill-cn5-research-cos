@@ -347,12 +347,17 @@ def compile_with_checkpoint(run_dir):
     for a long-lived saver we construct SqliteSaver directly over a sqlite3 conn.
     Returns (compiled_app, saver, conn) — caller keeps conn alive for the run.
     """
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
     from langgraph.checkpoint.sqlite import SqliteSaver
 
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(run_dir / "checkpoint.db"), check_same_thread=False)
-    saver = SqliteSaver(conn)
+    # Allowlist our own model modules so msgpack (de)serialization of the
+    # Pydantic-backed enums/state is explicit and future-proof (silences the
+    # "unregistered type" deprecation warning).
+    serde = JsonPlusSerializer(allowed_msgpack_modules=True)
+    saver = SqliteSaver(conn, serde=serde)
     app = build_graph().compile(checkpointer=saver)
     return app, saver, conn
 
