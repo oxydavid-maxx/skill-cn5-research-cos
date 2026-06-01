@@ -31,8 +31,40 @@ import asyncio
 import os
 from typing import Any
 
+# --- Windows: patch anyio.open_process so SDK-spawned `claude` children don't
+# open a console window (mirrors escape-mrc/Albert no_console.py). Applied at
+# import, before any SDK call spawns a subprocess. ---
+_CREATE_NO_WINDOW = 0x08000000
+_ANYIO_PATCHED = False
+
+
+def _patch_anyio_no_console() -> bool:
+    global _ANYIO_PATCHED
+    if _ANYIO_PATCHED or os.name != "nt":
+        return _ANYIO_PATCHED
+    try:
+        import anyio
+    except Exception:
+        return False
+    original = anyio.open_process
+    if getattr(original, "_cn5_no_console", False):
+        _ANYIO_PATCHED = True
+        return True
+
+    async def _open_process_no_console(*args: Any, **kwargs: Any):
+        kwargs["creationflags"] = int(kwargs.get("creationflags", 0) or 0) | _CREATE_NO_WINDOW
+        return await original(*args, **kwargs)
+
+    _open_process_no_console._cn5_no_console = True  # type: ignore[attr-defined]
+    anyio.open_process = _open_process_no_console
+    _ANYIO_PATCHED = True
+    return True
+
+
+_patch_anyio_no_console()
+
 # Default cheap/Haiku-tier model for the clarification front-end.
-DEFAULT_MODEL = os.environ.get("CN5_COS_LLM_MODEL", "claude-3-5-haiku-latest")
+DEFAULT_MODEL = os.environ.get("CN5_COS_LLM_MODEL", "haiku")
 
 # Environment handed to every SDK call.
 _SDK_ENV: dict[str, str] = {
@@ -89,6 +121,12 @@ async def _query_structured(
         env=dict(_SDK_ENV),
         model=model,
         output_format={"type": "json_schema", "schema": schema},
+        # Isolate from the ambient MCP config so a nested run (inside a Claude
+        # Code session) does NOT inherit other MCP servers' tool schemas — one
+        # of which uses oneOf/allOf/anyOf and 400s the whole tools array.
+        # `--strict-mcp-config` + empty mcp_servers => use ONLY what we pass.
+        mcp_servers={},
+        extra_args={"strict-mcp-config": None},
     )
 
     async def _run():
@@ -133,11 +171,10 @@ def call_structured(
     The narrow LLM node is the ONLY place the model lives; all loop/convergence/
     stop control stays deterministic in `cn5_ask`.
     """
-    if not has_api_key():
-        raise LLMUnavailableError(
-            "no ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN; cannot call the LLM"
-        )
-
+    # NO env-var auth gate (mirrors escape-mrc/Albert sdk_client): the Agent SDK
+    # spawns the `claude` CLI which authenticates via the Claude subscription /
+    # OAuth login — an ANTHROPIC_API_KEY is NOT required. If auth genuinely fails,
+    # the SDK call below errors and is wrapped in LLMUnavailableError.
     used_model = model or DEFAULT_MODEL
 
     def _once() -> dict[str, Any]:

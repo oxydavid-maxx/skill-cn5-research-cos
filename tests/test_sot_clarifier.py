@@ -134,10 +134,10 @@ def test_forced_stop_at_hard_cap(tmp_path):
 
 @pytest.mark.llm
 def test_live_underspecified_not_converged_turn1():
-    from cn5_research_cos.llm.sdk_client import has_api_key
-    if not has_api_key():
-        pytest.skip("no ANTHROPIC_API_KEY; skipping live clarifier test")
-    import tempfile, os
+    import os
+    if os.environ.get("CN5_COS_LLM_TESTS") != "1":
+        pytest.skip("set CN5_COS_LLM_TESTS=1 to run live LLM tests")
+    import tempfile
     with tempfile.TemporaryDirectory() as td:
         sess = clarifier.ClarifySession(
             run_id="run-live", db_path=os.path.join(td, "l.db"),
