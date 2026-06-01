@@ -215,3 +215,43 @@ P1 all-stub loop → P2 real Albert+LLM brains → P3 human+auto → P4 real wor
 4. Wire global **discuss-before-spec** guard: `~/.claude/feedback_discuss_before_spec.md` + MEMORY pointer (+ gate rule) — auto-commits via existing `~/.claude` hook.
 **NOT in BATCH 0:** any P1 code, models, loop, CLI. P1 build waits for the Ultraplan-refined plan to return + P1 fine-tune.
 **Then later:** merge Ultraplan refinements; fine-tune P1 (resolve O-1, lock scope); P1 detailed spec for approval.
+
+---
+
+# REVISION R2 (2026-06-01) — grounded in GPT Researcher + Open Deep Research + internal `paperwork`
+
+> Trigger: user challenged whether the loop referenced the open-research systems §16 suggests or was imagined. It was under-grounded. Two opus agents read the ACTUAL source of GPT Researcher (`gpt_researcher`/`multi_agents`/`deep_research`) and Open Deep Research (`deep_researcher.py`/`state.py`/`utils.py`), and one read the internal `paperwork` plugin. Full evidence: `docs/spec/gap-audit-2026-06-01.md`. Canonical revised flow: `docs/spec/flow-diagram.md` → "Revised engineering flow (R2)". **6-phase structure SURVIVES; P1 grows to carry the correct loop *shape* as deterministic stubs so P2–P4 are fill-in, not rewrite.**
+
+## Bucket A — our own spec §0–30 gaps → fixes
+- **A1** `ResearchState` missing the §8.1 preflight fields (likely_albert_concern, output_purpose, known_constraints, forbidden_directions, available_sources, internal_documents_available_or_not, default_research_priority, fallback_behavior_if_human_unavailable) → add to model (**P1**), populate at preflight (P3).
+- **A2** `AuditResult` missing §20 fields (missing_business_context, questions_albert_would_ask_next, recommended_next_probe, readiness_score_delta) → add (**P1**).
+- **A3** §10 anti-premature **7-item checklist** not enforced → deterministic `anti_premature.checklist()` gate before terminal_stop (**P1**).
+- **A4** §18 full 15-node set incomplete → add research_planning/evidence_normalizer/counterargument/human_pull/human_push/synthesis/terminal nodes (stubs where intelligence is later) (**P1** shape).
+- **A5** §11 "readiness plateaued" not detected → plateau detector (**P1**).
+
+## Bucket B — structural patterns from real GPTR + ODR → fixes
+- **B1 scope→brief front-end** (ODR `clarify_with_user`→`write_research_brief`): compressed "north star" brief every stage scores against; also H0 anchor → **P1** (deterministic brief) + **P3** (interactive clarify via interrupt).
+- **B2 supervisor + parallel context-isolated workers** (ODR `max_concurrent_research_units`, GPTR `asyncio.gather`): `select_branch`→supervisor fan-out, concurrency cap → **P1** (shape + cap, stub workers) + **P4** (real).
+- **B3 grounded decomposition** (GPTR cheap search before decompose) → **P2/P4** (node present P1).
+- **B4 compression node** (ODR `compress_research`, replace-semantics reducer) between worker and artifact_update → **P1** (passthrough stub) + **P2/P4** (real).
+- **B5 two-level iteration caps** (outer loop + per-worker) → **P1**.
+- **B6 real LangGraph `interrupt()` HITL** (ODR legacy plan-approval interrupt) for H1–H6 pull/push → **P3**.
+- **B7 two-altitude source ranking** (cheap embedding filter + optional LLM curator) → **P4**; stub P1.
+- **B8 typed null-exit convergence** (GPTR reviewer `review=None ⇒ accept`): critique stage emits challenges-or-clean; only clean advances; define skeptic-vs-audit precedence → **P1/P2**.
+- **B9 branch-budget decay** (GPTR `breadth//2`, `depth-1`, dedup visited) so `branch` can't explode → **P1** (decision).
+- **B10 staged binary decision gates** (compose small conditionals vs one 7-way router) → **P1** (decision design).
+
+## Bucket C — leverage existing INTERNAL assets (站在巨人肩膀上)
+- **C1 `paperwork` topic-report = the §16 internal-document / datasheet survey worker adapter.** Its output maps to `EvidenceBundle` (sources ← `reference-map.yaml`; claims ← §4 `[[ref-id,§N]]`-cited findings). It has NO native confidence/contradiction — those stay in our Source Critic / Skeptic. It is human-gated/heavyweight → a **manual-document-ingestion adapter**, not an autonomous web worker. → **P4/P5** (wire as one worker adapter; do NOT import its ASPICE/ip-spec branches or its stop-on-confirmation orchestrator control model).
+- **C2 Borrow paperwork's citation DISCIPLINE (intent, NOT its C1/C2/C3/D1 identifiers — those are internally inconsistent with its own gate code).** Evidence rules for our Source Critic / Evidence Bundle: resolvable citation to a primary source; **verbatim quote ≥0.85 fuzzy** (anti-fabrication); source **role declared**; **coverage-gaps** recorded (checked-but-empty = first-class auditable record — great for audit-driven); **flatten to primary source** (never cite a sibling worker's digest). → **P2** (evidence schema) + **P4** (enforcement).
+- **C3 Document handling conventions:** `reference/pdf/` (originals) + `reference/fragments/` (docling/pymupdf4llm-converted MD; raw pdftotext banned — loses tables) + a `reference-map` registry; **structural provenance YAML is the citation source-of-truth, NOT embeddings/RAG.** PDF→MD is a *worker-pipeline* prerequisite, not needed for Claude to read a PDF in-session. → **P4** doc adapter.
+- **C4 No embedding "LLM wiki" in the cockpit core** — paperwork deliberately avoids it; for citation discipline structural provenance beats fuzzy semantic recall. (Cross-project knowledge still goes to the separate personal-wiki per global rules.)
+
+## Net phase remap (structure unchanged)
+- **P1** (still deterministic, zero-LLM) GAINS: scope+brief nodes, supervisor fan-out shape + concurrency cap, compress node (passthrough), two-level caps, anti-premature 7-checklist, plateau detector, branch-budget decay, staged binary decision, full §18 node set, expanded model fields (A1/A2). All as deterministic stubs/passthrough.
+- **P2**: real brains + grounded decomposition + real compression + typed-exit Albert + evidence citation schema (C2).
+- **P3**: interrupt()-based H0–H6 + auto mode + interactive clarify (B1/B6).
+- **P4**: real parallel workers + two-altitude source ranking + **paperwork internal-doc adapter** + PDF→docling doc handling + reference-folder/provenance (B2/B7/C1/C2/C3).
+- **P5/P6**: unchanged (synthesis/memo; hardening).
+
+**Status:** flow-diagram.md + this backbone updated to R2. P1 spec being revised to R2 shape next. P1 implementation plan (uncommitted) will be regenerated against the revised P1 spec.

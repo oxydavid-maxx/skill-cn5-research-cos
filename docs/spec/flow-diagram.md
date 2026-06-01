@@ -1,6 +1,8 @@
 # BU Research Cockpit 流程圖（文字版）
 
 > **Canonical flow + HITL numbering (H0–H6).** User-provided 2026-06-01; colleague-shareable. This is the authoritative end-to-end flow for `skill-cn5-research-cos`. The HITL model here (H0–H6) supersedes the earlier 6-gate framing in `human-steering-layer.md` (which is now the explanatory companion).
+>
+> **REVISION R2 (2026-06-01):** after reading the actual source of GPT Researcher + Open Deep Research and the internal `paperwork` plugin (see `gap-audit-2026-06-01.md`), the loop gains a **scope→brief front-end**, a **supervisor with parallel context-isolated research workers**, a **compression node**, **two-level iteration caps**, **branch-budget decay**, an explicit **anti-premature 7-checklist**, and **interrupt()-based HITL**. The colleague-facing diagram below keeps the simple shape; the engineering shape is in the "Revised engineering flow (R2)" section at the bottom + `gap-audit-2026-06-01.md`.
 
 ```text
 會議中出現回答不了的問題
@@ -141,3 +143,31 @@ Done
 → 直到達到 readiness，或剩下都變成明確 human blockers
 → 產出 final memo
 ```
+
+---
+
+## Revised engineering flow (R2) — grounded in GPT Researcher + Open Deep Research + paperwork
+
+```text
+intake
+ → scope (clarify gate; H0)                         [ODR clarify_with_user]
+ → write_brief  (compressed "north star" objective) [ODR write_research_brief]
+ → issue_expansion (grounded: cheap search first)   [GPTR grounded decomposition]
+ → SUPERVISOR / select_branch                        [ODR supervisor]
+     └─ fan-out N context-isolated workers (concurrency cap):   [ODR/GPTR asyncio.gather + cap]
+          research_worker → source_critic(cheap rank) → compress(cited summary)
+          · research_worker adapters (§16): stub | GPT-Researcher | ODR |
+            paperwork topic-report (INTERNAL datasheet/doc survey) | internal-RAG
+ → skeptic / counterargument
+ → albert_audit  (typed exit: clean | challenges)    [GPTR reviewer null-exit]
+ → artifact_update (consume COMPRESSED output; dedup) [ODR compress + override_reducer]
+ → readiness_scoring (+ plateau detector)
+ → anti_premature_checklist (the 7 prerequisites, §10)
+ → cos_decision (staged binary gates: audit-clean? → readiness-met? →
+                 budget-left? → human-needed?; exhaustion + emission-gate; branch-budget decay)
+ → router: continue | branch | rerank | pull_human(interrupt) |
+           push_human(interrupt) | synthesize | pause | terminal_stop
+```
+
+### Citation / evidence discipline (borrowed from internal `paperwork`, by intent)
+Every claim in an EvidenceBundle must: (1) carry a **resolvable citation** to a primary source; (2) if quoted, match the source **verbatim ≥0.85** (anti-fabrication); (3) declare the source **role** (primary/secondary/standard/marketing/internal); (4) record **coverage-gaps** — sources checked that yielded nothing become a first-class auditable record (not a silent omission); (5) **flatten to primary source** — downstream never cites a sibling worker's digest, only originals. Document handling: `reference/pdf/` (originals) + `reference/fragments/` (docling-converted MD) + a `reference-map` registry; **structural provenance, NOT embedding/RAG**, is the citation source-of-truth.
