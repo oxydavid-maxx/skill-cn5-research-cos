@@ -20,7 +20,9 @@ ALL loop / convergence / stop / routing control is deterministic and lives in
 """
 from __future__ import annotations
 
+import json
 from importlib import resources
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from cn5_ask import (
@@ -287,3 +289,64 @@ class ClarifySession:
         # status stays draft until a human confirms via the CLI.
         return SOTBrief(**{k: v for k, v in data.items()
                            if k in SOTBrief.model_fields})
+
+
+# --------------------------------------------------------------------------- #
+# Dialogue persistence (turn-based CLI carries the dialogue across processes)
+# --------------------------------------------------------------------------- #
+def _dialogue_path(run_id: str, base_dir: str) -> Path:
+    return Path(base_dir) / run_id / "clarify_dialogue.json"
+
+
+def load_dialogue(run_id: str, base_dir: str = "runs") -> list[dict[str, str]]:
+    p = _dialogue_path(run_id, base_dir)
+    if not p.exists():
+        return []
+    return json.loads(p.read_text(encoding="utf-8"))
+
+
+def save_dialogue(run_id: str, dialogue: list[dict[str, str]], base_dir: str = "runs") -> None:
+    p = _dialogue_path(run_id, base_dir)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(dialogue, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def checkpoint_db_path(run_id: str, base_dir: str = "runs") -> str:
+    return str(Path(base_dir) / run_id / "clarify_checkpoint.db")
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic scripted step/compile (test affordance — NO LLM)
+# --------------------------------------------------------------------------- #
+_SCRIPTED_PROGRAM = [
+    {"C1": True, "C2": False, "C3": False, "C4": False},  # turn 1: 1/4
+    {"C1": True, "C2": True, "C3": True, "C4": False},     # turn 2: 3/4
+    {"C1": True, "C2": True, "C3": True, "C4": True},      # turn 3: 4/4 -> converge
+    {"C1": True, "C2": True, "C3": True, "C4": True},
+]
+
+
+def scripted_step_fn(state: dict[str, Any], context: dict[str, Any]) -> StepResult:
+    """A deterministic StepFn (no LLM) replaying _SCRIPTED_PROGRAM by turn index.
+
+    Used by the CLI under CN5_COS_CLARIFY_STEP=scripted so the turn-based session
+    state can be exercised end-to-end without a key.
+    """
+    idx = state.get("turn_count", 0)
+    prog = _SCRIPTED_PROGRAM[min(idx, len(_SCRIPTED_PROGRAM) - 1)]
+    return StepResult(
+        output={"questions": [f"[Q:CLARIFY] scripted question (turn {idx + 1})"],
+                "signal_rationale": {k: "scripted" for k in SIGNALS}},
+        signals=dict(prog),
+    )
+
+
+def scripted_compile_fn(state: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic compile (no LLM): a fixed schema-valid SOTBrief dict."""
+    return SOTBrief(
+        objective="scripted converged objective",
+        deliverable="scripted deliverable",
+        in_scope=["scripted in-scope"],
+        decision_served="scripted decision",
+        created_at="0000",
+    ).model_dump(mode="json")

@@ -14,6 +14,9 @@ from rich.console import Console
 from . import render
 from .graph import compile_with_checkpoint
 from .models import Decision, ResearchState
+from .sot import brief as sot_brief
+from .sot import clarifier as sot_clarifier
+from .sot.conflict import detect as detect_conflict
 from .state import GraphState
 from .store import load_snapshot, new_run, save_snapshot
 
@@ -156,6 +159,157 @@ def validate(run_id: str = typer.Argument(...)):
     console.print(f"[green]OK[/green] run_id={run_id} valid; "
                   f"issues={len(state.issue_map)} challenges={len(state.albert_challenge_map)} "
                   f"iterations={state.iteration_count}")
+
+
+def _make_clarify_session(rid: str, base_dir: str) -> sot_clarifier.ClarifySession:
+    """Build a ClarifySession; use the deterministic scripted step when asked
+    (CN5_COS_CLARIFY_STEP=scripted), otherwise the live LLM step."""
+    if os.environ.get("CN5_COS_CLARIFY_STEP") == "scripted":
+        step_fn = sot_clarifier.scripted_step_fn
+        compile_fn = sot_clarifier.scripted_compile_fn
+    else:
+        step_fn = sot_clarifier.sot_step_fn
+        compile_fn = sot_clarifier.sot_compile_fn
+    return sot_clarifier.ClarifySession(
+        run_id=rid,
+        db_path=sot_clarifier.checkpoint_db_path(rid, base_dir),
+        step_fn=step_fn,
+        compile_fn=compile_fn,
+        base_dir=base_dir,
+    )
+
+
+@app.command()
+def clarify(
+    question: str = typer.Option(None, "--question", "-q",
+                                 help="第一回合：要釐清的（可能含糊的）研究主題"),
+    answer: str = typer.Option(None, "--answer", "-a",
+                               help="後續回合：回答上一輪的釐清問題"),
+    run_id: str = typer.Option(None, "--run-id", help="clarify session 的 run id"),
+):
+    """多回合釐清研究主題，收斂後產出 SOTBrief（brief.v1）。
+
+    第一回合用 --question 起頭；之後每回合用 --answer 回答上一輪問題並續跑同一
+    session（turn-based，一次 CLI 呼叫推進一個 engine turn）。
+    """
+    base_dir = _base_dir()
+    now = _now()
+    rid = run_id or "run-" + now.replace(":", "").replace("-", "")
+
+    dialogue = sot_clarifier.load_dialogue(rid, base_dir)
+    if question:
+        dialogue = [{"role": "user", "text": question}]
+    elif answer:
+        if not dialogue:
+            console.print("[red]找不到既有 session；請先用 --question 起頭[/red]")
+            raise typer.Exit(code=2)
+        dialogue = dialogue + [{"role": "user", "text": answer}]
+    else:
+        console.print("[red]需要 --question（起頭）或 --answer（續答）[/red]")
+        raise typer.Exit(code=2)
+
+    sot_clarifier.save_dialogue(rid, dialogue, base_dir)
+
+    sess = _make_clarify_session(rid, base_dir)
+    result = sess.step(dialogue=dialogue, now=now)
+
+    console.print(f"run_id=[bold]{rid}[/bold] turn=[bold]{result['turn_count']}[/bold] "
+                  f"active={result['active_signals']}")
+
+    if not result["finished"]:
+        console.print("[yellow]未收斂[/yellow]，請回答以下釐清問題（用 "
+                      f"`cos clarify --answer \"...\" --run-id {rid}`）：")
+        for q in result["questions"]:
+            console.print(f"  • {q}")
+        raise typer.Exit(code=0)
+
+    tag = "收斂 (converged)" if result["converged"] else "達上限 (forced_stop)"
+    console.print(f"[green]{tag}[/green] — 已產出 SOTBrief brief.v1")
+    # Mirror the confirmed brief into the run's ResearchState if one exists.
+    _mirror_brief_into_state(rid, base_dir, result["brief"], now)
+    console.print(render_brief_summary(result["brief"]))
+
+
+def render_brief_summary(brief_dict: dict) -> str:
+    if not brief_dict:
+        return "(no brief)"
+    b = sot_brief.SOTBrief(**brief_dict)
+    return b.to_markdown()
+
+
+def _mirror_brief_into_state(rid: str, base_dir: str, brief_dict, now: str) -> None:
+    """Populate ResearchState.research_brief from the confirmed SOTBrief so the
+    loop's write_brief node reads it instead of the P1 stub. No-op if no state."""
+    if not brief_dict:
+        return
+    try:
+        state = load_snapshot(rid, base_dir=base_dir)
+    except FileNotFoundError:
+        return
+    b = sot_brief.SOTBrief(**brief_dict)
+    state.research_brief = b.to_markdown()
+    state.forbidden_directions = list(b.forbidden_directions)
+    state.available_sources = list(b.available_sources)
+    state.updated_at = now
+    save_snapshot(state, base_dir=base_dir)
+
+
+@app.command()
+def brief(run_id: str = typer.Argument(...)):
+    """顯示某個 run 的最新 SOTBrief。"""
+    try:
+        b = sot_brief.load_latest(run_id, base_dir=_base_dir())
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+    console.print(b.to_markdown())
+
+
+@app.command("revise-brief")
+def revise_brief(
+    run_id: str = typer.Argument(...),
+    field: str = typer.Option(..., "--field", help="要修訂的欄位名"),
+    value: str = typer.Option(..., "--value", help="新值（list 欄位用逗號分隔）"),
+):
+    """修訂 SOTBrief 的某個欄位，寫出 brief.v<N+1> 並 supersede 舊版。
+
+    若新值與現有 SOT 值矛盾，先印出 conflict（不靜默覆蓋），仍寫出新版供人類審視。
+    """
+    base_dir = _base_dir()
+    now = _now()
+    try:
+        current = sot_brief.load_latest(run_id, base_dir=base_dir)
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+
+    if field not in sot_brief.SOTBrief.model_fields:
+        console.print(f"[red]未知欄位：{field}[/red]")
+        raise typer.Exit(code=2)
+
+    list_fields = {name for name, f in sot_brief.SOTBrief.model_fields.items()
+                   if "list" in str(f.annotation)}
+    new_value = [v.strip() for v in value.split(",") if v.strip()] if field in list_fields else value
+
+    conflict = detect_conflict(current, {field: new_value}, source="revise-brief")
+    if conflict is not None:
+        console.print(f"[yellow]⚠ 偵測到與 SOT 矛盾（不靜默覆蓋）[/yellow] "
+                      f"field={conflict.field} severity={conflict.severity.value}")
+        console.print(f"  SOT: {conflict.sot_value!r}")
+        console.print(f"  新值: {conflict.new_value!r}")
+
+    new_version = current.version + 1
+    data = current.model_dump()
+    data[field] = new_value
+    data["version"] = new_version
+    data["status"] = sot_brief.BriefStatus.draft
+    data["created_at"] = now
+    revised = sot_brief.SOTBrief(**data)
+    sot_brief.save(revised, run_id, base_dir=base_dir)
+    superseded = sot_brief.supersede(run_id, up_to_version=current.version,
+                                     base_dir=base_dir, now=now)
+    _mirror_brief_into_state(run_id, base_dir, revised.model_dump(mode="json"), now)
+    console.print(f"[green]已寫出[/green] brief.v{new_version}；supersede 版本={superseded}")
 
 
 if __name__ == "__main__":
