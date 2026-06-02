@@ -133,7 +133,9 @@ def _brains(state: GraphState | None = None):
         if injected is not None:
             return injected
     llm = (state or {}).get("llm", "mock") if isinstance(state, dict) else "mock"
-    return build_brains(llm or "mock")
+    research_source = (state or {}).get("research_source", "web") \
+        if isinstance(state, dict) else "web"
+    return build_brains(llm or "mock", research_source=research_source or "web")
 
 
 def node_intake(state: GraphState) -> GraphState:
@@ -822,6 +824,7 @@ def run_loop(
     max_iterations: int = 8,
     now: str = "t",
     llm: str = "mock",
+    research_source: str = "web",
     metrics=None,
     return_metrics: bool = False,
 ):
@@ -848,6 +851,7 @@ def run_loop(
         "now": now,
         "max_iterations": max_iterations,
         "llm": llm,
+        "research_source": research_source,
     }
 
     def _invoke():
@@ -901,6 +905,7 @@ def run_auto(
     max_iterations: int = 8,
     now: str = "t",
     llm: str = "mock",
+    research_source: str = "web",
     default_priority: str | None = None,
     run_id: str | None = None,
 ):
@@ -934,6 +939,7 @@ def run_auto(
         "now": now,
         "max_iterations": max_iterations,
         "llm": llm,
+        "research_source": research_source,
         "mode": "auto",
         "enable_h6": False,
     }

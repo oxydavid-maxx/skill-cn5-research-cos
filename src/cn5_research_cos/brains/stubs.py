@@ -207,17 +207,40 @@ def build_mock_brains() -> Brains:
     )
 
 
-def build_brains(llm: str = "mock") -> Brains:
+def _apply_research_source(brains: Brains, research_source: str) -> Brains:
+    """Wrap the bundle's web researcher in a RoutingResearcher per the P4a
+    --research-source selector. ``web`` (or None) leaves the bundle UNCHANGED
+    (the web RealResearcher / ResearcherStub stays the researcher); ``internal``/
+    ``auto``/``both`` inject the routing researcher. Mirrors the --llm seam."""
+    if not research_source or research_source == "web":
+        return brains
+    if research_source not in ("internal", "auto", "both"):
+        raise NotImplementedError(
+            f"Unknown research_source={research_source!r}; expected "
+            "'web'|'internal'|'auto'|'both'."
+        )
+    from .internal_doc import InternalDocResearcher
+    from .research_router import RoutingResearcher
+    brains.researcher = RoutingResearcher(
+        brains.researcher, InternalDocResearcher(), source=research_source
+    )
+    return brains
+
+
+def build_brains(llm: str = "mock", *, research_source: str = "web") -> Brains:
     """Brain-bundle factory (injection hook).
 
     - ``"mock"`` -> P1 deterministic stubs (the 33 tests stay green).
     - ``"real"`` -> P2b real cheap-LLM narrow brains + Albert simulator.
 
-    The graph topology + all loop/COS control are identical for both; only the
-    node implementations differ.
+    ``research_source`` (P4a) selects the evidence source: ``web`` (default,
+    UNCHANGED) keeps the web researcher; ``internal``/``auto``/``both`` wrap it
+    in a RoutingResearcher that dispatches to the InternalDocResearcher per
+    issue. The graph topology + all loop/COS control are identical for all;
+    only the researcher node differs.
     """
     if llm == "mock":
-        return build_mock_brains()
+        return _apply_research_source(build_mock_brains(), research_source)
     if llm == "real":
         # Imported lazily so the deterministic 'mock' path never imports the LLM
         # stack (keeps the P1 suite import-light and offline).
@@ -227,7 +250,7 @@ def build_brains(llm: str = "mock") -> Brains:
         from .auditor_tier import build_auditor
 
         sentinel = RealAlbertSimulator()
-        return Brains(
+        real = Brains(
             # control-plane / not-yet-real-in-P2b nodes reuse the deterministic
             # implementations (clarify interrupt = P3; brief = SOT/P2a front-end;
             # supervisor selection is deterministic control, not a brain).
@@ -246,6 +269,7 @@ def build_brains(llm: str = "mock") -> Brains:
             # tagged via the seam (real Albert FSM = P6 swaps `base`/`model`).
             deep_auditor=build_auditor(tier="deep", base=RealAlbertSimulator()),
         )
+        return _apply_research_source(real, research_source)
     raise NotImplementedError(
         f"Unknown llm={llm!r}; expected 'mock' or 'real'."
     )

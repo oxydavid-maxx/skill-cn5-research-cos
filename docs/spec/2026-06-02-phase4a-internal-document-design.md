@@ -21,7 +21,7 @@ The internal-document Researcher, per issue, in order:
    1. `pdf_outline_scan.py <pdf> --keywords <issue keywords> --out outline.json` — locate candidate sections (no LLM).
    2. **our existing cheap Researcher brain** reads the outline → picks target page-range(s) for THIS issue (the chain's ONLY LLM call; structured output `{ranges: [{pages, why, role}]}`).
    3. `extract_page_range_pdf.py <pdf> --pages <N-M,…> --out subset.pdf` — subset target pages only (NEVER whole PDF).
-   4. `pdf2md.py subset.pdf --backend pymupdf4llm -o frag.md` (docling only when the brain flags table-heavy) — fragment MD.
+   4. `pdf2md.py subset.pdf --backend docling -o frag.md` — the fragment-of-record backend (paperwork v7.0.1+ `docling-strict` default forbids `pymupdf4llm` for citable fragments, exit 2). docling is model-based and slower than pymupdf4llm (the cost of citation-grade fidelity); pymupdf4llm is only for non-citable scratch and is NOT used here. The subprocess gets a generous explicit timeout so a slow-but-valid docling conversion is never silently killed/truncated. `table_heavy` is now just an outline hint, not a backend selector. — fragment MD.
    5. build a minimal `reference-map`-shaped record (role + source_pages + fragment_path) + cited `Claim`s (verbatim quote from the fragment) → `EvidenceBundle`.
 3. **Tier 3 — NOT in P4a.** Full agentic paperwork invocation (drive the `orchestrator` skill via an SDK sub-agent) is the most token-expensive (nested agentic loops + confirmation stops). Deferred; added later only if evidence shows tier-1/2 miss what paperwork's synthesis skills catch.
 
@@ -35,6 +35,9 @@ The internal-document Researcher, per issue, in order:
 - `EvidenceBundle.claims[]` ← cited findings: each `Claim{text, source_refs → resolvable fragment+pages, verbatim_quote (from fragment, the C2 seed)}`.
 - `EvidenceBundle.coverage_gaps[]` ← reference-map `coverage_gaps` (tier 1) / sections the brain wanted but no fragment produced (tier 2).
 - Confidence/contradiction are NOT in paperwork → derived by our existing `RealSourceCritic` / `RealSkeptic` downstream (unchanged). Full verbatim-≥0.85 enforcement + flatten-to-primary = P4b; P4a only PRESERVES the verbatim quote paperwork already carries.
+
+## Paperwork version contract
+We target the gerrit paperwork plugin at its `docling-strict` (v7.0.1+) behavior. Concretely: `pdf2md.py`'s `backend_policy` defaults to `docling-strict`, so `--backend pymupdf4llm` is REFUSED (exit 2) for fragment-of-record output. Our evidence IS fragment-of-record (the cockpit cites it for citation discipline), so docling is the ONLY valid backend for tier-2 — used always, regardless of `table_heavy`. A script policy-error (or any paperwork-script non-zero exit / timeout / launch failure) surfaces as a DISTINCT extraction-FAILURE gap (`internal_doc.has_extraction_failure(bundle)` is True, a visible `logger.error` is emitted, and NO sources/claims are fabricated) — it is NEVER masked as a benign "no relevant content" gap (silent-staleness / degraded-emission discipline). docling being model-based makes tier-2 slower than the old pymupdf4llm default; that is the accepted cost of citation-grade fidelity, and the subprocess timeout is sized generously (not the fast-script default) so a slow-but-valid conversion is not killed.
 
 ## H0 preflight intake (ties to P3)
 At preflight, when the brief indicates internal docs are relevant, prompt the user (chief-of-staff style, minimal) to drop available references into `reference/pdf/` OR point at a gerrit paperwork survey folder. Populates the brief's `available_sources` / `internal_documents_available`. The most convenient user flow: drop raw PDFs (tier 2) OR point at an existing survey (tier 1); the adapter handles both.

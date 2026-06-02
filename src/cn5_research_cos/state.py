@@ -25,6 +25,9 @@ class GraphState(TypedDict, total=False):
     now: str
     max_iterations: int
     llm: str
+    # P4a: evidence source selector — "web" (default, unchanged) | "internal" |
+    # "auto" | "both". Threaded into build_brains exactly like ``llm``.
+    research_source: str
     # P3 HITL: "interactive" (pause+exit on every pull gate) | "auto" (apply
     # default on low-risk pulls, hard-stop/interrupt only on high-risk).
     mode: str
