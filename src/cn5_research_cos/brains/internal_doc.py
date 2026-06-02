@@ -239,7 +239,7 @@ class InternalDocResearcher:
                         continue
                     src, c, g = evidence_map.record_from_fragment(
                         reference_id=f"{pdf.stem}-{pi}-{ri}",
-                        title=f"{pdf.name} (pages {pages})",
+                        title=pdf.name,
                         role=str(rng.get("role", "internal-research")),
                         fragment_path=frag, pages=pages, issue_id=issue_id,
                     )
