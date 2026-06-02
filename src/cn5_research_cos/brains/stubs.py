@@ -185,11 +185,8 @@ class ScorerStub:
         )
 
 
-def build_brains(llm: str = "mock") -> Brains:
-    if llm != "mock":
-        raise NotImplementedError(
-            f"Only the deterministic 'mock' brains exist in P1; got llm={llm!r}."
-        )
+def build_mock_brains() -> Brains:
+    """The P1 deterministic stub bundle (zero LLM)."""
     return Brains(
         clarify_gate=ClarifyGateStub(),
         brief_writer=BriefWriterStub(),
@@ -201,4 +198,43 @@ def build_brains(llm: str = "mock") -> Brains:
         skeptic=SkepticStub(),
         auditor=AuditorStub(),
         scorer=ScorerStub(),
+    )
+
+
+def build_brains(llm: str = "mock") -> Brains:
+    """Brain-bundle factory (injection hook).
+
+    - ``"mock"`` -> P1 deterministic stubs (the 33 tests stay green).
+    - ``"real"`` -> P2b real cheap-LLM narrow brains + Albert simulator.
+
+    The graph topology + all loop/COS control are identical for both; only the
+    node implementations differ.
+    """
+    if llm == "mock":
+        return build_mock_brains()
+    if llm == "real":
+        # Imported lazily so the deterministic 'mock' path never imports the LLM
+        # stack (keeps the P1 suite import-light and offline).
+        from .real import (RealCompressor, RealIssueExpander, RealResearcher,
+                           RealScorer, RealSkeptic, RealSourceCritic)
+        from ..albert.simulator import RealAlbertSimulator
+
+        return Brains(
+            # control-plane / not-yet-real-in-P2b nodes reuse the deterministic
+            # implementations (clarify interrupt = P3; brief = SOT/P2a front-end;
+            # supervisor selection is deterministic control, not a brain).
+            clarify_gate=ClarifyGateStub(),
+            brief_writer=BriefWriterStub(),
+            supervisor=SupervisorStub(),
+            # real narrow LLM brains:
+            issue_expander=RealIssueExpander(),
+            researcher=RealResearcher(),
+            source_critic=RealSourceCritic(),
+            compressor=RealCompressor(),
+            skeptic=RealSkeptic(),
+            auditor=RealAlbertSimulator(),
+            scorer=RealScorer(),
+        )
+    raise NotImplementedError(
+        f"Unknown llm={llm!r}; expected 'mock' or 'real'."
     )

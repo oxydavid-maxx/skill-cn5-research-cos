@@ -1,0 +1,398 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AlbertChallenge",
+  "type": "object",
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "continue",
+        "exhausted",
+        "rework"
+      ]
+    },
+    "audited_answer": {
+      "type": "string"
+    },
+    "would_survive_leadership": {
+      "type": "boolean"
+    },
+    "top_ambiguities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "term": {
+            "type": "string"
+          },
+          "why_dangerous": {
+            "type": "string"
+          },
+          "precise_question": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "term",
+          "why_dangerous",
+          "precise_question"
+        ]
+      },
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "albert_challenges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "challenge": {
+            "type": "string"
+          },
+          "why_albert_would_ask": {
+            "type": "string"
+          },
+          "current_answer": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "answered",
+              "partially_answered",
+              "needs_external_research",
+              "needs_internal_data",
+              "needs_bu_judgment",
+              "needs_albert_decision",
+              "needs_source_validation",
+              "blocked"
+            ]
+          },
+          "confidence": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "current_answer_strength": {
+            "type": "string",
+            "enum": [
+              "weak",
+              "medium",
+              "strong"
+            ]
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "missing_info": {
+            "type": "string"
+          },
+          "blocking_owner": {
+            "type": "string"
+          },
+          "next_action": {
+            "type": "string"
+          },
+          "meeting_ready_response": {
+            "type": "string"
+          },
+          "recommended_probe": {
+            "type": "string"
+          },
+          "generator": {
+            "type": "string",
+            "enum": [
+              "winning",
+              "first_principle",
+              "timing",
+              "competitor",
+              "owner_business",
+              "convergence_redteam"
+            ]
+          },
+          "bone": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 12
+          },
+          "high_impact": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "challenge",
+          "why_albert_would_ask",
+          "status",
+          "severity",
+          "current_answer_strength",
+          "generator",
+          "bone"
+        ]
+      }
+    },
+    "weak_points": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "missing_business_context": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "missing_evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "item": {
+            "type": "string"
+          },
+          "who_can_answer": {
+            "type": "string",
+            "enum": [
+              "AI",
+              "public",
+              "internal",
+              "customer"
+            ]
+          }
+        },
+        "required": [
+          "item",
+          "who_can_answer"
+        ]
+      }
+    },
+    "questions_albert_would_ask": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "premature_end_risk": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "atoms": {
+          "type": "object"
+        },
+        "grounded_in": {
+          "type": "string",
+          "enum": [
+            "research_state",
+            "inferred"
+          ]
+        },
+        "why": {
+          "type": "string"
+        },
+        "low_confidence": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "level",
+        "grounded_in"
+      ]
+    },
+    "research_drift_risk": {
+      "type": "object",
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "atoms": {
+          "type": "object"
+        },
+        "grounded_in": {
+          "type": "string",
+          "enum": [
+            "research_state",
+            "inferred"
+          ]
+        },
+        "why": {
+          "type": "string"
+        },
+        "low_confidence": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "level",
+        "grounded_in"
+      ]
+    },
+    "recommended_next_probe": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "probe": {
+            "type": "string"
+          },
+          "why": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "meta",
+              "object"
+            ]
+          },
+          "impact": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "answerability": {
+            "type": "string",
+            "enum": [
+              "low",
+              "medium",
+              "high"
+            ]
+          }
+        },
+        "required": [
+          "probe",
+          "why"
+        ]
+      }
+    },
+    "recommended_next_action": {
+      "type": "string",
+      "enum": [
+        "continue_research",
+        "branch",
+        "rerank",
+        "pull_human",
+        "push_human",
+        "synthesize",
+        "pause",
+        "terminal_stop"
+      ]
+    },
+    "rationale": {
+      "type": "string"
+    },
+    "decision_gate": {
+      "type": "object",
+      "properties": {
+        "can_decide_now": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "cannot_decide": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "owners": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "area": {
+                "type": "string"
+              },
+              "owner": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "area",
+              "owner"
+            ]
+          }
+        }
+      },
+      "required": [
+        "can_decide_now",
+        "cannot_decide",
+        "owners"
+      ]
+    },
+    "readiness_score_delta": {
+      "type": "integer",
+      "minimum": -2,
+      "maximum": 2
+    },
+    "reproducible_judgment": {
+      "type": "string"
+    },
+    "degraded": {
+      "type": "boolean"
+    },
+    "run_status": {
+      "type": "string",
+      "enum": [
+        "passed",
+        "failed"
+      ]
+    },
+    "verdict_standalone": {
+      "type": "string",
+      "enum": [
+        "可推進",
+        "要補證據",
+        "方向錯",
+        "產品定義不完整"
+      ]
+    },
+    "light": {
+      "type": "string",
+      "enum": [
+        "green",
+        "yellow",
+        "red"
+      ]
+    }
+  },
+  "required": [
+    "verdict",
+    "albert_challenges",
+    "weak_points",
+    "premature_end_risk",
+    "research_drift_risk",
+    "recommended_next_action",
+    "rationale",
+    "degraded"
+  ]
+}

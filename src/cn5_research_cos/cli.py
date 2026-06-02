@@ -56,8 +56,8 @@ def run(
                                 help="從上次 checkpoint 續跑（需 --run-id），不重頭跑"),
 ):
     """跑完整研究收斂迴圈，逐輪印出中文 summary，最後印停止原因 + 四項 readiness 分數。"""
-    if llm != "mock":
-        console.print(f"[red]P1 僅支援 --llm mock（real brains 為 P2）；收到 {llm!r}[/red]")
+    if llm not in ("mock", "real"):
+        console.print(f"[red]--llm 僅支援 mock|real；收到 {llm!r}[/red]")
         raise typer.Exit(code=2)
 
     now = _now()
@@ -90,6 +90,7 @@ def run(
             "base_dir": base_dir,
             "now": now,
             "max_iterations": max_iterations,
+            "llm": llm,
         }
 
     try:
