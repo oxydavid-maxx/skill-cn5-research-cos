@@ -154,6 +154,62 @@ def test_one_researcher_raises_others_complete(monkeypatch):
     assert len(got) == 3
 
 
+class _SyncLoopBrain:
+    """A *sync* critique brain (source_critic / compressor shape) that internally
+    drives its own event loop via ``asyncio.run`` — exactly what the REAL brains do
+    when routed through ``sdk_client``'s sync ``call_structured`` -> ``ClaudeSession``
+    (``self._loop.run_until_complete(...)``) path.
+
+    Contract this locks: such a brain must NEVER be invoked from inside the running
+    fan-out event loop. If it is, ``asyncio.run()`` raises
+    ``RuntimeError: asyncio.run() cannot be called from a running event loop`` —
+    which is the deterministic stand-in for the live failure
+    (``coroutine 'ClaudeSDKClient.connect' was never awaited`` + no structured
+    output). With the fix (critique runs on the sync stack AFTER ``asyncio.gather``),
+    these calls succeed and the bundles survive.
+    """
+
+    @staticmethod
+    async def _noop():
+        return None
+
+    def review(self, bundle):
+        asyncio.run(self._noop())  # illegal inside a running loop -> RuntimeError
+        return bundle
+
+    def compress(self, bundle):
+        asyncio.run(self._noop())  # illegal inside a running loop -> RuntimeError
+        return bundle
+
+
+def test_sync_loop_critique_brains_run_outside_fanout_loop(monkeypatch):
+    """REGRESSION (the gap that let the 0-evidence bug ship): the critique brains
+    (source_critic, compressor) are SYNC and internally run their own event loop.
+    They must execute OUTSIDE the async fan-out loop. If they ran inside it (the
+    bug), ``asyncio.run`` would raise and every researcher's bundle would be dropped
+    -> 0 evidence. With the fix, all bundles come back intact.
+    """
+    monkeypatch.setenv("CN5_COS_MAX_CONCURRENT", "3")
+    rec = _ConcurrencyRecorder()
+    rs = _state_with_open_issues(["q0", "q1", "q2"])
+    selected = list(rs.issue_map.keys())
+
+    class _B:
+        researcher = _SleepyResearcher(rec)
+        source_critic = _SyncLoopBrain()
+        compressor = _SyncLoopBrain()
+
+    bundles = graph_mod.run_research_fanout(rs, selected, _B(), now="t", llm="mock")
+
+    # If the sync-loop critique brains ran inside the fan-out loop, asyncio.run
+    # would raise and each task would be dropped via return_exceptions -> [].
+    # The fix runs them on the sync stack after gather, so all bundles survive.
+    assert [b.issue_id for b in bundles] == selected, (
+        "critique brains were run inside the async fan-out loop "
+        "(sync asyncio.run nested in a running loop) -> bundles dropped"
+    )
+
+
 def test_collect_folds_fanout_results_into_evidence(monkeypatch):
     """The graph node writes the gathered bundles into state.evidence in order."""
     monkeypatch.setenv("CN5_COS_MAX_CONCURRENT", "3")

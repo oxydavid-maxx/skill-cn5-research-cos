@@ -183,15 +183,24 @@ def _build_worker_proxy(rs: ResearchState, issue_id: str) -> ResearchState:
 
 
 async def _research_one_async(brains, rs: ResearchState, issue_id: str, *, pool):
-    """Research ONE issue concurrently, then run the (fast, sync) source_critic +
-    compressor on its bundle. Returns the EvidenceBundle.
+    """Research ONE issue concurrently and return its RAW EvidenceBundle.
+
+    This runs INSIDE the fan-out event loop (``asyncio.gather`` / ``asyncio.run``),
+    so it MUST stay purely async: only the WebSearch researcher runs here. The
+    (sync) ``source_critic`` / ``compressor`` brains are intentionally NOT called
+    here — they route through ``sdk_client``'s sync ``call_structured`` ->
+    ``ClaudeSession`` path which drives its OWN event loop via
+    ``run_until_complete`` / ``asyncio.run``. Invoking a sync run-its-own-loop
+    call from inside this already-running loop is illegal (the nested connect
+    coroutine is never awaited -> no structured output -> every researcher fails ->
+    0 evidence). Critique therefore happens on the normal sync call stack AFTER
+    ``asyncio.gather`` returns (see ``run_research_fanout``).
 
     Concurrency model: if the researcher exposes an async ``research_async`` it is
     awaited directly (it uses the bounded ``AsyncSessionPool`` for its WebSearch
     call, so the cap = MAX_CONCURRENT bounds parallel `claude` spawns). Otherwise
     (deterministic stub / sync brain) the sync ``research`` runs in a worker thread
-    via ``asyncio.to_thread`` so independent issues still overlap. The cheap
-    critic/compress brains stay sequential per the spec.
+    via ``asyncio.to_thread`` so independent issues still overlap.
     """
     proxy = _build_worker_proxy(rs, issue_id)
     researcher = brains.researcher
@@ -199,8 +208,6 @@ async def _research_one_async(brains, rs: ResearchState, issue_id: str, *, pool)
         bundle = await researcher.research_async(proxy, issue_id, pool=pool)
     else:
         bundle = await asyncio.to_thread(researcher.research, proxy, issue_id)
-    bundle = brains.source_critic.review(bundle)
-    bundle = brains.compressor.compress(bundle)
     return bundle
 
 
@@ -210,9 +217,19 @@ def run_research_fanout(rs: ResearchState, selected: list[str], brains, *,
     by the MAX_CONCURRENT semaphore) and return their EvidenceBundles in STABLE
     issue-id order (the selection order) regardless of finish order.
 
+    Two-phase by design (concurrency bug fix): the ASYNC phase (WebSearch fan-out)
+    runs purely inside one ``asyncio.run`` loop; the SYNC critique phase
+    (``source_critic.review`` + ``compressor.compress``) runs SEQUENTIALLY AFTER
+    that loop has fully returned, on the normal sync call stack. This guarantees no
+    sync run-its-own-loop LLM call (``ClaudeSession.run_until_complete`` /
+    ``call_structured``'s ``asyncio.run``) ever executes inside the running fan-out
+    loop — which would otherwise never await the nested connect coroutine and
+    yield 0 evidence. The critique brains are fast/cheap, so sequential is fine.
+
     A researcher that raises is skipped (its issue produces no bundle) but does NOT
     break the others and does NOT leak a pool permit — the gather collects
-    exceptions per-task via ``return_exceptions=True``.
+    exceptions per-task via ``return_exceptions=True``. A critique brain that raises
+    on one bundle likewise drops only that bundle.
     """
     if not selected:
         return []
@@ -239,15 +256,29 @@ def run_research_fanout(rs: ResearchState, selected: list[str], brains, *,
         finally:
             if pool is not None:
                 await pool.aclose()
-        # Stable order = selection order; drop the ones that raised.
-        bundles = []
+        # Stable order = selection order; drop the researchers that raised.
+        raw_bundles = []
         for iid, res in zip(selected, results):
             if isinstance(res, Exception):
                 continue
-            bundles.append(res)
-        return bundles
+            raw_bundles.append(res)
+        return raw_bundles
 
-    return asyncio.run(_run())
+    # Phase 1 (async): WebSearch fan-out, one event loop, fully drained here.
+    raw_bundles = asyncio.run(_run())
+
+    # Phase 2 (sync): critique each surviving bundle on the normal sync call stack
+    # — OUTSIDE any running event loop — so the sync run-its-own-loop brains are
+    # legal. A brain that raises on one bundle drops only that bundle.
+    bundles = []
+    for bundle in raw_bundles:
+        try:
+            bundle = brains.source_critic.review(bundle)
+            bundle = brains.compressor.compress(bundle)
+        except Exception:  # noqa: BLE001 - one bad critique never kills the batch
+            continue
+        bundles.append(bundle)
+    return bundles
 
 
 def node_research_fanout(state: GraphState) -> GraphState:
