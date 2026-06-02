@@ -45,16 +45,60 @@ def _fake_call_structured(system, user, schema, **kw):
     return {"sources": [], "claims": []}
 
 
+_WS = {"sources": [{"title": "t", "url": "https://x", "source_type": "secondary",
+                    "quality": "medium"}],
+       "claims": [{"claim": "c", "confidence": 3, "source_indices": [0], "notes": "n"}],
+       "missing_evidence": [], "coverage_gaps": []}
+
+
 def _fake_websearch(system, user, schema, **kw):
-    return {"sources": [{"title": "t", "url": "https://x", "source_type": "secondary",
-                         "quality": "medium"}],
-            "claims": [{"claim": "c", "confidence": 3, "source_indices": [0], "notes": "n"}],
-            "missing_evidence": [], "coverage_gaps": []}
+    return dict(_WS)
+
+
+# Fake SDK client so the REAL researcher async fan-out (AsyncSessionPool ->
+# ClaudeSession.ask_async) runs OFFLINE — never spawns a real `claude`.
+class _ToolBlock:
+    def __init__(self, payload):
+        self.name = "StructuredOutput"
+        self.input = payload
+
+
+class _Assistant:
+    def __init__(self, content):
+        self.content = content
+
+
+class _Result:
+    total_cost_usd = 0.001
+    usage = {"input_tokens": 1, "output_tokens": 1}
+    is_error = False
+
+
+class _FakeWSClient:
+    def __init__(self, options=None):
+        self.options = options
+
+    async def connect(self):
+        pass
+
+    async def disconnect(self):
+        pass
+
+    async def query(self, user):
+        pass
+
+    def receive_response(self):
+        return self._gen()
+
+    async def _gen(self):
+        yield _Assistant([_ToolBlock(dict(_WS))])
+        yield _Result()
 
 
 def test_run_loop_returns_metrics_and_opens_pool(tmp_path, monkeypatch):
     monkeypatch.setattr(sdk_client, "call_structured", _fake_call_structured)
     monkeypatch.setattr(sdk_client, "call_structured_websearch", _fake_websearch)
+    monkeypatch.setattr(sdk_client, "ClaudeSDKClient", _FakeWSClient)
 
     metrics = RunMetrics()
     final, returned_metrics = run_loop(

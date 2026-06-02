@@ -12,15 +12,16 @@ all mutation happens in nodes.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sqlite3
 from pathlib import Path
 
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import Send
 
 from .artifacts import issue_map
 from .brains import build_brains
+from .llm import sdk_client
 from .decision import anti_premature, branch_budget, exhaustion, gate
 from .models import (Decision, EvidenceBundle, IssueStatus, IssueType,
                      ResearchState)
@@ -152,62 +153,108 @@ def node_issue_expansion(state: GraphState) -> GraphState:
 
 def node_supervisor(state: GraphState) -> GraphState:
     # No mutation here beyond clearing the per-round worker buffer; the actual
-    # fan-out happens via the conditional edge `route_fanout` below.
+    # CONCURRENT fan-out happens in `node_research_fanout` (the next edge).
     return {"worker_results": []}
 
 
-def _fanout_payload(state: GraphState):
-    rs = state["research_state"]
-    selected = select_research_issues(rs, _brains(state))
-    now = state.get("now", "t")
-    llm = state.get("llm", "mock")
-    return [
-        Send(
-            "worker",
-            {
-                "issue_id": iid,
-                "issue_title": rs.issue_map[iid].title,
-                "issue_description": rs.issue_map[iid].description,
-                "iteration_count": rs.iteration_count,
-                "now": now,
-                "llm": llm,
-            },
-        )
-        for iid in selected
-    ]
-
-
-def route_fanout(state: GraphState):
-    """Read-only: returns Send objects for selected issues, or routes to collect
-    directly when nothing is selectable (keeps the graph live)."""
-    sends = _fanout_payload(state)
-    if not sends:
-        return "collect"
-    return sends
-
-
-def node_worker(payload: dict) -> GraphState:
-    """Context-isolated worker. Receives ONLY the issue payload (not full state).
-    Runs research -> source_critic -> compress, writes to worker_results (reducer
-    merges across parallel Sends). P1 runs these via Send fan-out; P4 flips on
-    real parallelism without changing this shape.
-    """
-    brains = _brains({"llm": payload.get("llm", "mock")})
-    # Build a throwaway ResearchState carrying just enough for the researcher
-    # (issue title + iteration count) — context isolation per ODR supervisor pattern.
-    proxy = ResearchState(run_id="_worker", original_question="")
-    proxy.iteration_count = payload["iteration_count"]
+def _build_worker_proxy(rs: ResearchState, issue_id: str) -> ResearchState:
+    """A throwaway, context-isolated ResearchState carrying just the one issue the
+    researcher needs (title + iteration count) — per the ODR supervisor pattern,
+    a worker sees ONLY its issue, not the whole run state."""
     from .models import IssueNode
-    proxy.issue_map[payload["issue_id"]] = IssueNode(
-        id=payload["issue_id"], title=payload["issue_title"],
-        description=payload.get("issue_description") or payload["issue_title"],
-        issue_type=IssueType.technical,
+    node = rs.issue_map.get(issue_id)
+    title = node.title if node else issue_id
+    desc = (node.description if node and node.description else title)
+    proxy = ResearchState(run_id="_worker", original_question=rs.original_question)
+    proxy.iteration_count = rs.iteration_count
+    proxy.issue_map[issue_id] = IssueNode(
+        id=issue_id, title=title, description=desc,
+        issue_type=(node.issue_type if node else IssueType.technical),
         status=IssueStatus.researching, impact=3, confidence=2,
     )
-    bundle = brains.researcher.research(proxy, payload["issue_id"])
+    return proxy
+
+
+async def _research_one_async(brains, rs: ResearchState, issue_id: str, *, pool):
+    """Research ONE issue concurrently, then run the (fast, sync) source_critic +
+    compressor on its bundle. Returns the EvidenceBundle.
+
+    Concurrency model: if the researcher exposes an async ``research_async`` it is
+    awaited directly (it uses the bounded ``AsyncSessionPool`` for its WebSearch
+    call, so the cap = MAX_CONCURRENT bounds parallel `claude` spawns). Otherwise
+    (deterministic stub / sync brain) the sync ``research`` runs in a worker thread
+    via ``asyncio.to_thread`` so independent issues still overlap. The cheap
+    critic/compress brains stay sequential per the spec.
+    """
+    proxy = _build_worker_proxy(rs, issue_id)
+    researcher = brains.researcher
+    if hasattr(researcher, "research_async"):
+        bundle = await researcher.research_async(proxy, issue_id, pool=pool)
+    else:
+        bundle = await asyncio.to_thread(researcher.research, proxy, issue_id)
     bundle = brains.source_critic.review(bundle)
     bundle = brains.compressor.compress(bundle)
-    return {"worker_results": [bundle.model_dump()]}
+    return bundle
+
+
+def run_research_fanout(rs: ResearchState, selected: list[str], brains, *,
+                        now: str = "t", llm: str = "mock") -> list:
+    """Run the K selected issues' researchers CONCURRENTLY (one event loop, bounded
+    by the MAX_CONCURRENT semaphore) and return their EvidenceBundles in STABLE
+    issue-id order (the selection order) regardless of finish order.
+
+    A researcher that raises is skipped (its issue produces no bundle) but does NOT
+    break the others and does NOT leak a pool permit — the gather collects
+    exceptions per-task via ``return_exceptions=True``.
+    """
+    if not selected:
+        return []
+
+    cap = sdk_client._max_concurrent()
+
+    async def _run():
+        pool = None
+        if llm == "real":
+            pool = sdk_client.AsyncSessionPool(max_concurrent=cap)
+        # A fan-out-level semaphore is the HARD ceiling on concurrent researchers
+        # for BOTH paths: the real path's pool also caps per-key spawns at the
+        # same MAX_CONCURRENT (they compose), and the mock path (local sleeps, no
+        # pool) is bounded here too. Task 3: MAX_CONCURRENT bounds parallel spawns.
+        sem = asyncio.Semaphore(cap)
+
+        async def _guarded(iid):
+            async with sem:
+                return await _research_one_async(brains, rs, iid, pool=pool)
+
+        try:
+            tasks = [_guarded(iid) for iid in selected]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            if pool is not None:
+                await pool.aclose()
+        # Stable order = selection order; drop the ones that raised.
+        bundles = []
+        for iid, res in zip(selected, results):
+            if isinstance(res, Exception):
+                continue
+            bundles.append(res)
+        return bundles
+
+    return asyncio.run(_run())
+
+
+def node_research_fanout(state: GraphState) -> GraphState:
+    """Concurrent researcher fan-out node (replaces the serial Send -> worker
+    fan-out). Selects the top-K issues, researches them concurrently, and writes
+    the bundles into ``worker_results`` (consumed by ``node_collect``) in stable
+    issue-id order so the loop stays deterministic."""
+    rs = state["research_state"]
+    now = state.get("now", "t")
+    llm = state.get("llm", "mock")
+    brains = _brains(state)
+    selected = select_research_issues(rs, brains)
+    bundles = run_research_fanout(rs, selected, brains, now=now, llm=llm)
+    return {"worker_results": [b.model_dump() for b in bundles]}
 
 
 def node_collect(state: GraphState) -> GraphState:
@@ -390,7 +437,7 @@ def build_graph() -> StateGraph:
     g.add_node("write_brief", node_write_brief)
     g.add_node("issue_expansion", node_issue_expansion)
     g.add_node("supervisor", node_supervisor)
-    g.add_node("worker", node_worker)
+    g.add_node("research_fanout", node_research_fanout)
     g.add_node("collect", node_collect)
     g.add_node("skeptic", node_skeptic)
     g.add_node("albert_audit", node_albert_audit)
@@ -404,9 +451,10 @@ def build_graph() -> StateGraph:
     g.add_edge("scope", "write_brief")
     g.add_edge("write_brief", "issue_expansion")
     g.add_edge("issue_expansion", "supervisor")
-    # supervisor fans out to workers (Send) or straight to collect if none selectable.
-    g.add_conditional_edges("supervisor", route_fanout, ["worker", "collect"])
-    g.add_edge("worker", "collect")
+    # supervisor -> CONCURRENT researcher fan-out (asyncio.gather over the top-K
+    # selected issues, bounded by the MAX_CONCURRENT pool semaphore) -> collect.
+    g.add_edge("supervisor", "research_fanout")
+    g.add_edge("research_fanout", "collect")
     g.add_edge("collect", "skeptic")
     g.add_edge("skeptic", "albert_audit")
     g.add_edge("albert_audit", "artifact_update")

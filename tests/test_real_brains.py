@@ -136,3 +136,72 @@ def test_scorer_returns_readiness(monkeypatch):
     assert isinstance(out, ReadinessScore)
     assert out.albert_challenge_readiness == 3
     assert out.should_continue is True
+
+
+# --------------------------------------------------------------------------- #
+# RealResearcher async path (P2 accel increment 2)
+# --------------------------------------------------------------------------- #
+def test_researcher_async_uses_pool(monkeypatch):
+    """research_async acquires a session from the async pool and calls ask_async,
+    returning the same typed EvidenceBundle the sync path would."""
+    import asyncio
+
+    scripted = {
+        "sources": [{"title": "ODR", "url": "https://x/odr",
+                     "source_type": "secondary", "quality": "medium"}],
+        "claims": [{"claim": "viable", "confidence": 3, "source_indices": [0]}],
+        "missing_evidence": ["cost"], "coverage_gaps": ["internal"],
+    }
+
+    class _FakeSession:
+        def __init__(self):
+            self.asks = []
+
+        async def ask_async(self, user, *, schema=None, brain="unknown"):
+            self.asks.append((user, brain, schema is not None))
+            return scripted
+
+    class _FakeAcq:
+        def __init__(self, sess):
+            self._sess = sess
+
+        async def __aenter__(self):
+            return self._sess
+
+        async def __aexit__(self, *exc):
+            return None
+
+    class _FakePool:
+        def __init__(self):
+            self.session = _FakeSession()
+            self.acquire_calls = []
+
+        def acquire(self, **kw):
+            self.acquire_calls.append(kw)
+            return _FakeAcq(self.session)
+
+    pool = _FakePool()
+    state = _state()
+    bundle = asyncio.run(RealResearcher().research_async(state, "I1", pool=pool))
+
+    assert isinstance(bundle, EvidenceBundle)
+    assert bundle.issue_id == "I1"
+    assert len(bundle.sources) == 1 and bundle.sources[0].id == "S-I1-0"
+    assert bundle.claims and bundle.claims[0].source_refs == ["S-I1-0"]
+    # it actually went through the async pool session (not the sync path)
+    assert len(pool.acquire_calls) == 1
+    assert pool.session.asks and pool.session.asks[0][2] is True  # schema passed
+    # acquired WITH the WebSearch tool
+    assert pool.acquire_calls[0]["allowed_tools"] == ["WebSearch"]
+
+
+def test_researcher_async_falls_back_to_sync_without_pool(monkeypatch):
+    """research_async(pool=None) uses the sync websearch call (back-compat)."""
+    import asyncio
+
+    scripted = {"sources": [], "claims": []}
+    monkeypatch.setattr(sdk_client, "call_structured_websearch",
+                        lambda *a, **k: scripted)
+    bundle = asyncio.run(RealResearcher().research_async(_state(), "I2", pool=None))
+    assert isinstance(bundle, EvidenceBundle)
+    assert bundle.issue_id == "I2"
