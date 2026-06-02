@@ -168,10 +168,30 @@ def node_issue_expansion(state: GraphState) -> GraphState:
     return {"research_state": rs, "prereqs": prereqs}
 
 
+def _consume_steer_events(rs: ResearchState) -> None:
+    """Apply any unconsumed H4 ``steer`` events: re-rank by bumping the impact of
+    issues whose title matches the steer text (substring), so the next selection
+    re-prioritises toward the steered direction. Each steer is consumed once."""
+    for e in rs.steering_events:
+        if e.get("kind") != "steer" or e.get("consumed"):
+            continue
+        text = e.get("text", "")
+        bumped = False
+        for n in rs.issue_map.values():
+            if n.title and (n.title in text or text in n.title):
+                n.impact = min(5, n.impact + 1)
+                bumped = True
+        e["consumed"] = True
+        e["reranked"] = bumped
+
+
 def node_supervisor(state: GraphState) -> GraphState:
-    # No mutation here beyond clearing the per-round worker buffer; the actual
-    # CONCURRENT fan-out happens in `node_research_fanout` (the next edge).
-    return {"worker_results": []}
+    # Consume any pending H4 steer events (re-rank) BEFORE selection so the steered
+    # direction takes effect this iteration; then clear the per-round worker buffer.
+    # The actual CONCURRENT fan-out happens in `node_research_fanout` (next edge).
+    rs = state["research_state"]
+    _consume_steer_events(rs)
+    return {"research_state": rs, "worker_results": []}
 
 
 def _build_worker_proxy(rs: ResearchState, issue_id: str) -> ResearchState:
@@ -844,3 +864,99 @@ def run_loop(
     if return_metrics:
         return final, metrics
     return final
+
+
+# --------------------------------------------------------------------------- #
+# P3 auto mode + H4 steering
+# --------------------------------------------------------------------------- #
+def apply_steer(rs: ResearchState, text: str, *, now: str = "t") -> dict:
+    """Append an H4 ``steer`` event to the (checkpointed) state. The next
+    iteration's ``node_supervisor`` consumes it and re-ranks toward the steered
+    direction. Returns the appended event."""
+    ev = {"kind": "steer", "text": text, "at": now, "consumed": False}
+    rs.steering_events.append(ev)
+    rs.updated_at = now
+    return ev
+
+
+def _stop_reason(final: ResearchState, decision, *, paused: bool, max_iterations: int):
+    """Compose the §8.3/§9.4 stop reason for an auto run."""
+    if paused:
+        return ("hard_stop_high_risk",
+                "高風險人類介入點：auto 模式硬停，等待人類回答（可 resume）")
+    if decision == Decision.terminal_stop:
+        return ("terminal_stop", "研究已窮盡且四項 readiness 達標，正常終止")
+    if decision == Decision.synthesize:
+        return ("synthesize", "可定址問題已飽和，剩餘為人類/內部資料瓶頸，進入綜整")
+    if final.iteration_count >= max_iterations:
+        return ("iteration_ceiling",
+                f"達到 max_iterations={max_iterations} 上限，停止")
+    return ("stopped", "迴圈結束")
+
+
+def run_auto(
+    initial: ResearchState,
+    *,
+    base_dir,
+    max_iterations: int = 8,
+    now: str = "t",
+    llm: str = "mock",
+    default_priority: str | None = None,
+    run_id: str | None = None,
+):
+    """Overnight AUTO mode (spec §"auto mode" + Test 5).
+
+    Runs the loop WITHOUT pausing on low-risk gates (``human_pull`` applies
+    ``default_if_no_response`` + records a ``steering_event(auto-default)``); §8.4
+    soft blockers lower confidence and continue, medium blockers spawn a HumanTask
+    and continue an adjacent branch (``human_push``), and HARD blockers / high-risk
+    pulls hard-stop via ``interrupt`` (resumable even in auto). Uses the
+    checkpointed graph so a hard-stop is resumable by ``run_id``.
+
+    Returns a dict::
+
+        {state, paused, ask, decision, reason_kind, stop_reason, run_id}
+
+    ``paused`` True ⇒ a high-risk hard-stop (``ask`` = the pending interrupt
+    payload, resumable via ``cos resume <run_id>``); False ⇒ the run reached a
+    terminal/synthesize/ceiling stop (``stop_reason`` explains why).
+    """
+    rid = run_id or initial.run_id
+    if default_priority and not initial.default_research_priority:
+        initial.default_research_priority = default_priority
+    initial.mode = "auto"
+
+    app, _saver, conn = compile_with_checkpoint(os.path.join(str(base_dir), rid))
+    cfg = {"configurable": {"thread_id": rid}, "recursion_limit": 200}
+    init: GraphState = {
+        "research_state": initial,
+        "base_dir": str(base_dir),
+        "now": now,
+        "max_iterations": max_iterations,
+        "llm": llm,
+        "mode": "auto",
+        "enable_h6": False,
+    }
+    try:
+        out = app.invoke(init, config=cfg)
+        snap = app.get_state(cfg)
+        final = snap.values["research_state"]
+        interrupts = out.get("__interrupt__") if isinstance(out, dict) else None
+        paused = bool(interrupts) or bool(snap.next)
+        ask = interrupts[0].value if interrupts else None
+        decision = out.get("last_decision") if isinstance(out, dict) else None
+        reason_kind, stop_reason = _stop_reason(
+            final, decision, paused=paused, max_iterations=max_iterations)
+        save_snapshot(final, base_dir=base_dir)
+    finally:
+        conn.close()
+
+    return {
+        "state": final,
+        "paused": paused,
+        "ask": ask,
+        "decision": decision,
+        "reason_kind": reason_kind,
+        "stop_reason": stop_reason,
+        "run_id": rid,
+    }
