@@ -187,6 +187,8 @@ class ScorerStub:
 
 def build_mock_brains() -> Brains:
     """The P1 deterministic stub bundle (zero LLM)."""
+    from .auditor_tier import build_auditor
+    sentinel = AuditorStub()
     return Brains(
         clarify_gate=ClarifyGateStub(),
         brief_writer=BriefWriterStub(),
@@ -196,8 +198,12 @@ def build_mock_brains() -> Brains:
         source_critic=SourceCriticStub(),
         compressor=CompressorStub(),
         skeptic=SkepticStub(),
-        auditor=AuditorStub(),
+        auditor=sentinel,
         scorer=ScorerStub(),
+        # Tier 2 gate auditor — same deterministic auditor, tier-tagged (P6 swaps
+        # the model by config). A fresh AuditorStub so the two tiers are distinct
+        # objects (the gating test counts deep-tier calls independently).
+        deep_auditor=build_auditor(tier="deep", base=AuditorStub()),
     )
 
 
@@ -218,7 +224,9 @@ def build_brains(llm: str = "mock") -> Brains:
         from .real import (RealCompressor, RealIssueExpander, RealResearcher,
                            RealScorer, RealSkeptic, RealSourceCritic)
         from ..albert.simulator import RealAlbertSimulator
+        from .auditor_tier import build_auditor
 
+        sentinel = RealAlbertSimulator()
         return Brains(
             # control-plane / not-yet-real-in-P2b nodes reuse the deterministic
             # implementations (clarify interrupt = P3; brief = SOT/P2a front-end;
@@ -232,8 +240,11 @@ def build_brains(llm: str = "mock") -> Brains:
             source_critic=RealSourceCritic(),
             compressor=RealCompressor(),
             skeptic=RealSkeptic(),
-            auditor=RealAlbertSimulator(),
+            auditor=sentinel,
             scorer=RealScorer(),
+            # Tier 2 deep auditor: in P3 still the SAME simulator class, tier-
+            # tagged via the seam (real Albert FSM = P6 swaps `base`/`model`).
+            deep_auditor=build_auditor(tier="deep", base=RealAlbertSimulator()),
         )
     raise NotImplementedError(
         f"Unknown llm={llm!r}; expected 'mock' or 'real'."
