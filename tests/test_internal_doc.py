@@ -129,7 +129,7 @@ def _wire_tier2(monkeypatch, tmp_path, *, brain_ranges, capture):
         Path(out).write_bytes(b"%PDF-subset")
         return Path(out)
 
-    def fake_pdf2md(home_, subset, out, *, backend="pymupdf4llm"):
+    def fake_pdf2md(home_, subset, out, *, backend="docling", **kw):
         capture.setdefault("backends", []).append(backend)
         Path(out).write_text(
             "# §4 DAA\nDynamic Address Assignment assigns a 7-bit dynamic "
@@ -164,11 +164,14 @@ def test_tier2_generate_bounded_subset(monkeypatch, tmp_path):
     # BOUNDED SUBSET: the extracted pages are NOT the whole 600-page PDF
     assert capture["pages"] == "40-45"
     assert capture["pages"] not in ("1-600", "1-", "all")
-    # default backend pymupdf4llm (not table-heavy)
-    assert capture["backends"] == ["pymupdf4llm"]
+    # docling is the fragment-of-record backend (paperwork v7.0.1+ docling-strict)
+    assert capture["backends"] == ["docling"]
 
 
-def test_tier2_docling_only_when_table_heavy(monkeypatch, tmp_path):
+def test_tier2_always_uses_docling_regardless_of_table_heavy(monkeypatch, tmp_path):
+    # paperwork v7.0.1+: docling is the ONLY valid backend for citable fragments.
+    # The old "pymupdf4llm default, docling on table_heavy" inversion is gone —
+    # docling is used for EVERY range, table_heavy or not.
     capture = {}
     pdf = tmp_path / "spec.pdf"
     pdf.write_bytes(b"%PDF-1.4")
@@ -181,8 +184,9 @@ def test_tier2_docling_only_when_table_heavy(monkeypatch, tmp_path):
     rs.internal_documents_available = True
     iss = _issue(rs, "register map")
     InternalDocResearcher().research(rs, iss.id, pdfs=[pdf])
-    # first range pymupdf4llm, the table-heavy range docling
-    assert capture["backends"] == ["pymupdf4llm", "docling"]
+    # BOTH ranges use docling — never pymupdf4llm (forbidden for fragment-of-record)
+    assert capture["backends"] == ["docling", "docling"]
+    assert "pymupdf4llm" not in capture["backends"]
 
 
 def test_tier2_never_extracts_whole_pdf_even_if_brain_misbehaves(monkeypatch, tmp_path):
@@ -199,6 +203,71 @@ def test_tier2_never_extracts_whole_pdf_even_if_brain_misbehaves(monkeypatch, tm
     # no extraction happened (no pages captured) and a gap is recorded
     assert "pages" not in capture
     assert bundle.coverage_gaps
+
+
+# --------------------------------------------------------------------------- #
+# Silent-degradation regression: a SCRIPT/CONFIG error must NOT be masked as a
+# benign "no relevant content" gap (silent-staleness / degraded-emission lesson).
+# --------------------------------------------------------------------------- #
+def test_tier2_script_error_surfaces_distinct_extraction_failure(monkeypatch, tmp_path, caplog):
+    """When scripts.pdf2md raises PaperworkScriptError (e.g. the v7 docling-strict
+    policy exit-2, or a tool failure), tier-2 must record a DISTINCT extraction-
+    FAILURE marker (detectable), log a VISIBLE warning, and fabricate NOTHING —
+    not swallow it into an indistinguishable benign content gap.
+
+    FAILS on the old behavior (a plain "extract/convert failed …" content-style
+    gap with no distinct marker / no warning); PASSES after the fix.
+    """
+    capture = {}
+    pdf = tmp_path / "renesas i3c um.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    _wire_tier2(monkeypatch, tmp_path, capture=capture, brain_ranges=[
+        {"pages": "40-45", "why": "DAA section", "role": "datasheet",
+         "table_heavy": False},
+    ])
+
+    # Override pdf2md to raise the v7 policy error (the live regression).
+    def boom_pdf2md(home_, subset, out, *, backend="docling", **kw):
+        raise internal_doc.scripts.PaperworkScriptError(
+            "pdf2md.py exited 2: backend_policy=docling-strict forbids "
+            "--backend pymupdf4llm for fragment-of-record output."
+        )
+    monkeypatch.setattr(internal_doc.scripts, "pdf2md", boom_pdf2md)
+
+    rs = _state()
+    rs.internal_documents_available = True
+    iss = _issue(rs, "dynamic address assignment details")
+    with caplog.at_level(logging.WARNING):
+        bundle = InternalDocResearcher().research(rs, iss.id, pdfs=[pdf])
+
+    assert isinstance(bundle, EvidenceBundle)
+    # 1) NO fabrication: a tool failure produced no real evidence.
+    assert bundle.sources == []
+    assert bundle.claims == []
+    # 2) A DISTINCT extraction-FAILURE marker (not a benign content gap). The
+    # bundle must be detectable as an extraction failure, naming the pdf + reason.
+    assert internal_doc.has_extraction_failure(bundle) is True
+    fail_gaps = [g for g in bundle.coverage_gaps if "extraction FAILED" in g]
+    assert fail_gaps, "must record a distinctly-named extraction FAILURE gap"
+    assert any("renesas i3c um.pdf" in g for g in fail_gaps)
+    assert any("docling-strict" in g or "exited 2" in g for g in fail_gaps)
+    # 3) It is NOT the indistinguishable benign-gap shape.
+    assert not any(g.startswith("no relevant page range") for g in bundle.coverage_gaps)
+    # 4) A VISIBLE warning/error was logged.
+    assert any(
+        r.levelno >= logging.WARNING and "extraction" in r.message.lower()
+        for r in caplog.records
+    ), "a visible warning naming the extraction failure must be logged"
+
+
+def test_has_extraction_failure_false_on_benign_content_gap():
+    # A genuine "found nothing" gap is NOT an extraction failure — the predicate
+    # must distinguish a tool/config error from genuinely-empty content.
+    benign = EvidenceBundle(
+        query="q", issue_id="i", claims=[], sources=[],
+        coverage_gaps=["no relevant page range identified in spec.pdf"],
+    )
+    assert internal_doc.has_extraction_failure(benign) is False
 
 
 # --------------------------------------------------------------------------- #

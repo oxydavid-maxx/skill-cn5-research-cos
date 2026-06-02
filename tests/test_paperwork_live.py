@@ -73,9 +73,12 @@ def test_real_scripts_chain(tmp_path):
     scripts.extract_pages(_HOME, pdf, "3", subset)
     assert subset.is_file() and subset.stat().st_size > 0
 
-    # 3) pdf2md (real, pymupdf4llm)
+    # 3) pdf2md (real, docling — the fragment-of-record backend; paperwork
+    # v7.0.1+ docling-strict forbids pymupdf4llm for citable fragments). docling
+    # is model-based and slower than pymupdf4llm — expected; the wrapper gives it
+    # a generous timeout.
     frag = tmp_path / "frag.md"
-    scripts.pdf2md(_HOME, subset, frag, backend="pymupdf4llm")
+    scripts.pdf2md(_HOME, subset, frag, backend="docling")
     text = frag.read_text(encoding="utf-8")
     assert "Dynamic Address Assignment" in text or "DAA" in text
 
@@ -102,9 +105,19 @@ def test_real_tier2_end_to_end_with_real_brain(tmp_path, monkeypatch):
     bundle = InternalDocResearcher().research(rs, iss.id, pdfs=[pdf])
     assert isinstance(bundle, EvidenceBundle)
     # The real brain should have located the DAA section and produced a cited
-    # claim with a verbatim quote. (If the brain returned no range, the bundle
-    # records a gap instead — assert one or the other, never fabrication.)
+    # claim with a verbatim quote (via real docling conversion). If the brain
+    # returned no range, the bundle records a benign gap; if a paperwork SCRIPT
+    # errored, it records a DISTINCT extraction-FAILURE marker. Assert one of
+    # these — never fabrication.
     assert bundle.sources or bundle.coverage_gaps
     if bundle.claims:
         assert bundle.claims[0].notes  # verbatim quote
         assert bundle.claims[0].source_refs
+    else:
+        # No real evidence: must be either a benign content gap or a DISTINCT,
+        # detectable extraction failure — and absolutely no fabricated sources.
+        assert bundle.sources == []
+        assert bundle.coverage_gaps
+    # A script/config error must NEVER masquerade as a benign content gap.
+    if internal_doc.has_extraction_failure(bundle):
+        assert bundle.sources == [] and bundle.claims == []

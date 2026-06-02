@@ -11,8 +11,12 @@ Implements the existing ``Researcher`` Protocol (sync ``research`` + async
 
   Tier 2 — GENERATE: for a raw PDF (brief ``internal_documents_available`` /
     ``pdfs=[...]``): outline_scan -> ONE cheap LLM call (the page-range picker)
-    -> extract_pages (BOUNDED subset, never whole file) -> pdf2md (pymupdf4llm
-    default, docling only when the brain flags table_heavy) -> cited Claims.
+    -> extract_pages (BOUNDED subset, never whole file) -> pdf2md (ALWAYS
+    ``docling`` — the fragment-of-record backend; paperwork v7.0.1+
+    ``docling-strict`` forbids ``pymupdf4llm`` for citable fragments) -> cited
+    Claims. A paperwork SCRIPT error (outline/extract/pdf2md) is surfaced LOUDLY
+    as a DISTINCT extraction-FAILURE gap (``has_extraction_failure``), never
+    masked as a benign "no content" gap.
 
   Degrade — if ``find_paperwork_home()`` is None: do NOT fabricate internal
     evidence; return a gap-recording bundle + emit a VISIBLE warning. The
@@ -38,6 +42,13 @@ logger = logging.getLogger("cn5_research_cos.internal_doc")
 # Marker recorded in coverage_gaps when paperwork is unavailable, so the degraded
 # bundle is detectable downstream (never silently presented as gathered evidence).
 _DEGRADED_GAP = "paperwork unavailable: internal-document research degraded to web"
+
+# Distinct marker for a paperwork SCRIPT/CONFIG error (outline/extract/pdf2md
+# exited non-zero, timed out, or could not launch). A tool failure is NOT a
+# benign content gap: it means evidence-gathering FAILED, not that nothing was
+# found. The phrase is asserted on by tests and downstream consumers, so it is a
+# stable contract — do NOT reword without updating has_extraction_failure().
+_EXTRACTION_FAILURE_MARKER = "extraction FAILED"
 
 _PAGE_RANGE_SCHEMA = {
     "type": "object",
@@ -82,6 +93,34 @@ _PAGES_RE = re.compile(r"^\s*\d+(?:\s*-\s*\d+)?(?:\s*,\s*\d+(?:\s*-\s*\d+)?)*\s*
 def is_degraded(bundle: EvidenceBundle) -> bool:
     """True iff the bundle is the degraded (paperwork-unavailable) shape."""
     return any(g == _DEGRADED_GAP for g in bundle.coverage_gaps)
+
+
+def has_extraction_failure(bundle: EvidenceBundle) -> bool:
+    """True iff the bundle recorded a paperwork SCRIPT/CONFIG error (a tool/config
+    FAILURE during evidence gathering) — distinct from a benign content gap.
+
+    Lets callers/tests tell "evidence-gathering FAILED" apart from "genuinely
+    found nothing": the former demands operator attention (fix the config / tool),
+    the latter is an expected research outcome.
+    """
+    return any(_EXTRACTION_FAILURE_MARKER in g for g in bundle.coverage_gaps)
+
+
+def _record_script_failure(coverage_gaps: list[str], *, stage: str,
+                           pdf_name: str, issue_id: str | None,
+                           reason: str) -> None:
+    """Record a DISTINCT, loudly-logged extraction-FAILURE gap for a paperwork
+    script error. NOT a benign content gap — the bundle must make it detectable
+    that evidence-gathering FAILED (per the silent-staleness / degraded-emission
+    lessons). The marker phrase is the ``has_extraction_failure`` contract."""
+    gap = (f"internal-doc {stage} {_EXTRACTION_FAILURE_MARKER} for {pdf_name} "
+           f"issue {issue_id}: {reason}")
+    coverage_gaps.append(gap)
+    logger.error(
+        "internal-doc %s %s for %s (issue %s): %s — recorded as a distinct "
+        "extraction failure (NOT a benign content gap); NO evidence fabricated.",
+        stage, _EXTRACTION_FAILURE_MARKER, pdf_name, issue_id, reason,
+    )
 
 
 def _tokenize(text: str) -> set[str]:
@@ -206,11 +245,18 @@ class InternalDocResearcher:
                 try:
                     scan = scripts.outline_scan(home, pdf, keywords, out=outline_out)
                 except scripts.PaperworkScriptError as e:
-                    coverage_gaps.append(f"outline_scan failed for {pdf.name}: {e}")
+                    # SCRIPT/CONFIG error -> distinct, loud extraction FAILURE
+                    # (not a benign content gap).
+                    _record_script_failure(
+                        coverage_gaps, stage="outline_scan", pdf_name=pdf.name,
+                        issue_id=issue_id, reason=str(e),
+                    )
                     continue
 
                 ranges = _pick_page_ranges(scan.get("text", ""), title, desc)
                 if not ranges:
+                    # GENUINE empty result (the brain found no relevant range) —
+                    # a benign content gap, deliberately NOT an extraction failure.
                     coverage_gaps.append(
                         f"no relevant page range identified in {pdf.name}"
                     )
@@ -225,16 +271,22 @@ class InternalDocResearcher:
                             f"in {pdf.name}"
                         )
                         continue
-                    table_heavy = bool(rng.get("table_heavy", False))
-                    backend = "docling" if table_heavy else "pymupdf4llm"
+                    # docling is the ONLY valid backend for fragment-of-record
+                    # output (paperwork v7.0.1+ docling-strict forbids pymupdf4llm
+                    # for citable fragments). table_heavy is now just a hint and
+                    # NO LONGER selects the backend — docling is used regardless.
                     subset = tmpd / f"subset_{pi}_{ri}.pdf"
                     frag = tmpd / f"frag_{pi}_{ri}.md"
                     try:
                         scripts.extract_pages(home, pdf, pages, subset)
-                        scripts.pdf2md(home, subset, frag, backend=backend)
+                        scripts.pdf2md(home, subset, frag, backend="docling")
                     except scripts.PaperworkScriptError as e:
-                        coverage_gaps.append(
-                            f"extract/convert failed for {pdf.name} {pages}: {e}"
+                        # SCRIPT/CONFIG error (incl. the v7 docling-strict policy
+                        # exit-2 or a docling timeout) -> distinct, loud extraction
+                        # FAILURE naming the pdf + range; never a silent content gap.
+                        _record_script_failure(
+                            coverage_gaps, stage=f"extract/convert ({pages})",
+                            pdf_name=pdf.name, issue_id=issue_id, reason=str(e),
                         )
                         continue
                     src, c, g = evidence_map.record_from_fragment(
