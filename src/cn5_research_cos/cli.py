@@ -72,6 +72,8 @@ def run(
     run_id: str = typer.Option(None, "--run-id"),
     max_iterations: int = typer.Option(8, "--max-iterations"),
     llm: str = typer.Option("mock", "--llm"),
+    research_source: str = typer.Option("auto", "--research-source",
+                                        help="證據來源：web|internal|auto|both（預設 auto）"),
     resume: bool = typer.Option(False, "--resume",
                                 help="從上次 checkpoint 續跑（需 --run-id），不重頭跑"),
     resume_state: bool = typer.Option(False, "--resume-state",
@@ -83,6 +85,9 @@ def run(
     """
     if llm not in ("mock", "real"):
         console.print(f"[red]--llm 僅支援 mock|real；收到 {llm!r}[/red]")
+        raise typer.Exit(code=2)
+    if research_source not in ("web", "internal", "auto", "both"):
+        console.print(f"[red]--research-source 僅支援 web|internal|auto|both；收到 {research_source!r}[/red]")
         raise typer.Exit(code=2)
 
     now = _now()
@@ -117,6 +122,7 @@ def run(
         stream_input: GraphState | None = {
             "research_state": initial, "base_dir": base_dir, "now": now,
             "max_iterations": max_iterations, "llm": llm,
+            "research_source": research_source,
             "mode": "interactive", "enable_h6": True,
         }
     else:
@@ -131,6 +137,7 @@ def run(
         stream_input: GraphState | None = {
             "research_state": initial, "base_dir": base_dir, "now": now,
             "max_iterations": max_iterations, "llm": llm,
+            "research_source": research_source,
             "mode": "interactive", "enable_h6": True,
         }
 
@@ -262,6 +269,8 @@ def run_auto_cmd(
     run_id: str = typer.Option(None, "--run-id"),
     max_iterations: int = typer.Option(8, "--max-iterations"),
     llm: str = typer.Option("mock", "--llm"),
+    research_source: str = typer.Option("auto", "--research-source",
+                                        help="證據來源：web|internal|auto|both（預設 auto）"),
     default_priority: str = typer.Option(None, "--default-priority",
                                          help="auto 模式無人時的預設研究優先序"),
 ):
@@ -269,13 +278,17 @@ def run_auto_cmd(
     if llm not in ("mock", "real"):
         console.print(f"[red]--llm 僅支援 mock|real；收到 {llm!r}[/red]")
         raise typer.Exit(code=2)
+    if research_source not in ("web", "internal", "auto", "both"):
+        console.print(f"[red]--research-source 僅支援 web|internal|auto|both；收到 {research_source!r}[/red]")
+        raise typer.Exit(code=2)
     now = _now()
     base_dir = _base_dir()
     rid = run_id or "run-" + now.replace(":", "").replace("-", "")
     initial = ResearchState(run_id=rid, original_question=question,
                             mode="auto", created_at=now, updated_at=now)
     result = run_auto(initial, base_dir=base_dir, max_iterations=max_iterations,
-                      now=now, llm=llm, default_priority=default_priority, run_id=rid)
+                      now=now, llm=llm, research_source=research_source,
+                      default_priority=default_priority, run_id=rid)
     final = result["state"]
 
     console.rule(f"[bold]AUTO run {rid}[/bold]")
