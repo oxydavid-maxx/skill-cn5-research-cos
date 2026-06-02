@@ -50,3 +50,41 @@ First full live `--llm real` run. Question: "評估我們 BU 是否應該自建�
 - **Lower `max_turns`/cap WebSearch depth** per researcher call.
 
 Target: an iteration should be ≤ a couple minutes, not 15.
+
+---
+
+## ULTIMATE P2 acceleration plan (SOTA + escape-mrc/Albert proven patterns)
+
+**Root cause quantified.** SOTA confirms the killer: the Claude Agent SDK's `query()` has a **~12s startup overhead PER CALL — "no hot process reuse"** ([SDK issue #34](https://github.com/anthropics/claude-agent-sdk-typescript/issues/34)); a **persistent session drops subsequent calls to <1s**. Our `sdk_client` does `query()` per brain → it re-spawns the `claude` CLI (+ SessionStart hooks) on EVERY call. With ~15 calls/iter, that's **~3 min of pure spawn overhead per iteration before any work**. This is THE thing to kill.
+
+### Tier 1 — kill the per-call spawn (the single biggest win) — port escape-mrc's `ClaudeSession`
+escape-mrc already solved this: `ai_escape_mrc/sdk_client.py:355` `ClaudeSession` — connect ONE `ClaudeSDKClient` once, run many turns via `.ask()` (`_session_turn` → `client.query()` + `client.receive_response()` on the live connection), reconnect-on-transport-error. Pays the ~12s startup ONCE per session, not per call.
+- **Action:** add a `ClaudeSession` (persistent client) to our `llm/sdk_client.py`; route a run's brain calls through it. Expected: per-iteration spawn overhead ~180s → ~12s. **Likely the difference between 15 min and ~3–4 min/iter.**
+
+### Tier 2 — parallelism (independent work concurrently) — escape-mrc `asyncio.gather`
+The per-issue researcher fan-out + the independent critique brains are embarrassingly parallel. SOTA: M1-Parallel ≈ **2.2× speedup**; escape-mrc runs parallel quadrants/why-chains via `asyncio.gather`.
+- **Tension + resolution:** one persistent session is SEQUENTIAL. So use a **small POOL of K persistent sessions (K=3–4)** and dispatch the Send-fan-out across the pool — amortizes startup AND runs concurrently. Cap concurrency (rate-limit safe).
+- **Action:** make `supervisor` dispatch researchers concurrently over a session pool. Expected: another ~2–3× on the WebSearch-heavy fan-out (wall-clock, not cost).
+
+### Tier 3 — prompt caching (cost + latency) — Anthropic `cache_control`
+Each brain re-sends a large static system prompt every call. SDK supports automatic + explicit prompt caching.
+- **Action:** mark the big per-brain system prompts with `cache_control` (and keep them STATIC across calls so they cache-hit). Cuts input-token $ + latency on hits. Biggest cheap *cost* win across the many calls.
+
+### Tier 4 — do less work (cap the fan-out)
+- **Cap researcher fan-out** to top-K highest-`impact` OPEN issues per iteration (not all 9). **Skip `answered` issues** (don't re-search). **Dedup** search queries across issues/iterations.
+- **Bound WebSearch turns** per researcher (escape-mrc caps `max_turns=3–5` for tool calls; one WebSearch = one turn).
+- **Latches** (escape-mrc `_WEBSEARCH_UNAVAILABLE`/`_TOOLS_UNAVAILABLE`, `CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK`): once a path proves unavailable, skip it instead of retry-storming. (version-skip already in our `_SDK_ENV`.)
+
+### Tier 5 — measure (so optimization is quantitative)
+- **Instrument cost/latency:** capture `ResultMessage.total_cost_usd` + per-call duration; print a per-run summary. (The benchmark above had NO cost number — fix that first so Tiers 1–4 are measurable.)
+
+### Tier 6 — SOTA advanced (optional, later)
+- **Agentic plan caching** ([arxiv 2506.14852](https://arxiv.org/pdf/2506.14852)): cache the issue-decomposition / research plan for similar topics.
+- **Semantic caching** of WebSearch results (dedup across iterations/runs).
+- **Model cascade**: keep `haiku` default; escalate ONLY specific brains/Albert when warranted (P6 real Albert skill).
+- **Staircase streaming** (TTFT −93%) — only if we add a streaming UI; not needed for batch CLI.
+
+### Recommended order (impact × effort)
+**1) ClaudeSession persistent session (Tier 1)** → **2) cost instrumentation (Tier 5)** → **3) cap fan-out + skip-answered (Tier 4)** → **4) session-pool parallelism (Tier 2)** → **5) prompt caching (Tier 3)**. Tiers 1+4+2 alone should hit the "≤ a couple minutes/iter" target; 3 then drives cost down. Tier 6 is for later scale.
+
+**Sources:** [SDK ~12s/call no-reuse #34](https://github.com/anthropics/claude-agent-sdk-typescript/issues/34) · [Anthropic prompt caching](https://platform.claude.com/docs/en/build-with-claude/prompt-caching) · [SDK sessions](https://platform.claude.com/docs/en/agent-sdk/sessions) · [M1-Parallel / parallel multi-agent](https://arxiv.org/pdf/2507.08944) · [Agentic Plan Caching](https://arxiv.org/pdf/2506.14852) · in-repo: `skill-ai-escape-mrc/ai_escape_mrc/sdk_client.py:355` (`ClaudeSession`).
