@@ -1,10 +1,17 @@
-"""LangGraph StateGraph: full §18 node set, supervisor Send-fan-out, staged router.
+"""LangGraph StateGraph: full §18 node set, concurrent researcher fan-out, staged router.
 
 Canonical order (flow-diagram R2):
   intake -> scope -> write_brief -> issue_expansion -> supervisor
-    -> [Send -> worker (research -> source_critic -> compress)] -> collect
+    -> research_fanout (asyncio.gather over top-K issues, each
+        research -> source_critic -> compress; bounded by MAX_CONCURRENT) -> collect
     -> skeptic -> albert_audit -> artifact_update -> readiness_scoring
     -> anti_premature -> cos_decision -> router
+
+P2 acceleration increment 2: the per-issue researchers run CONCURRENTLY
+(``run_research_fanout`` → ``asyncio.gather``) in one event loop, bounded by the
+``CN5_COS_MAX_CONCURRENT`` semaphore (= the hard ceiling on parallel `claude`
+spawns); results fold into ``state.evidence`` in stable issue-id order so the
+loop stays deterministic. Replaces the earlier serial ``Send`` → worker fan-out.
 
 Determinism / no wall-clock: ``now`` flows through GraphState from the caller.
 Router functions are read-only (no state mutation) per LangGraph best practice;
