@@ -140,7 +140,8 @@ _RESEARCH_SYSTEM = (
 
 
 class RealResearcher:
-    def research(self, state: ResearchState, issue_id: str) -> EvidenceBundle:
+    @staticmethod
+    def _user_prompt(state: ResearchState, issue_id: str) -> tuple[str, str]:
         node = state.issue_map.get(issue_id)
         title = node.title if node else issue_id
         desc = node.description if node else ""
@@ -149,8 +150,10 @@ class RealResearcher:
             f"CONTEXT (original question): {state.original_question}\n\n"
             "Run ONE WebSearch for this sub-issue and return sources + grounded claims."
         )
-        raw = sdk_client.call_structured_websearch(_RESEARCH_SYSTEM, user, _RESEARCH_SCHEMA)
+        return title, user
 
+    @staticmethod
+    def _build_bundle(raw: dict, title: str, issue_id: str) -> EvidenceBundle:
         sources: list[Source] = []
         for i, s in enumerate(raw.get("sources", [])):
             try:
@@ -182,6 +185,33 @@ class RealResearcher:
             missing_evidence=list(raw.get("missing_evidence", [])),
             coverage_gaps=list(raw.get("coverage_gaps", [])),
         )
+
+    def research(self, state: ResearchState, issue_id: str) -> EvidenceBundle:
+        title, user = self._user_prompt(state, issue_id)
+        raw = sdk_client.call_structured_websearch(_RESEARCH_SYSTEM, user, _RESEARCH_SCHEMA)
+        return self._build_bundle(raw, title, issue_id)
+
+    async def research_async(self, state: ResearchState, issue_id: str, *,
+                             pool=None) -> EvidenceBundle:
+        """Async WebSearch via the bounded ``AsyncSessionPool`` so the K
+        researchers in the graph fan-out overlap (each acquires its own live
+        `claude` session, capped at MAX_CONCURRENT). Falls back to the sync
+        websearch call when no pool is supplied (back-compat / single-issue use).
+        """
+        title, user = self._user_prompt(state, issue_id)
+        if pool is None:
+            raw = sdk_client.call_structured_websearch(
+                _RESEARCH_SYSTEM, user, _RESEARCH_SCHEMA
+            )
+            return self._build_bundle(raw, title, issue_id)
+        # Route through the pool's retry-with-release so a transport/rate-limit
+        # error frees the permit before backing off (Task 3a) and never deadlocks.
+        raw = await pool.run_with_retry(
+            user, system=_RESEARCH_SYSTEM, schema=_RESEARCH_SCHEMA,
+            allowed_tools=["WebSearch"], model=None, max_turns=4,
+            brain="researcher+ws",
+        )
+        return self._build_bundle(raw, title, issue_id)
 
 
 # --------------------------------------------------------------------------- #

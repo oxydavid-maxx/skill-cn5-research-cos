@@ -58,20 +58,69 @@ def _fake_call_structured(system, user, schema, **kw):
     return {"sources": [], "claims": []}
 
 
+_WEBSEARCH_RESULT = {
+    "sources": [{"title": "ODR overview", "url": "https://example.com/odr",
+                 "source_type": "secondary", "quality": "medium"}],
+    "claims": [{"claim": "Overnight autonomous research is increasingly viable",
+                "confidence": 3, "source_indices": [0], "notes": "n"}],
+    "missing_evidence": ["cost data"],
+    "coverage_gaps": ["internal benchmarks"],
+}
+
+
 def _fake_websearch(system, user, schema, **kw):
-    return {
-        "sources": [{"title": "ODR overview", "url": "https://example.com/odr",
-                     "source_type": "secondary", "quality": "medium"}],
-        "claims": [{"claim": "Overnight autonomous research is increasingly viable",
-                    "confidence": 3, "source_indices": [0], "notes": "n"}],
-        "missing_evidence": ["cost data"],
-        "coverage_gaps": ["internal benchmarks"],
-    }
+    return dict(_WEBSEARCH_RESULT)
+
+
+# --- Fake SDK client so the REAL async fan-out path (AsyncSessionPool ->
+# ClaudeSession.ask_async) runs OFFLINE/deterministically. The researcher now
+# uses the async session pool (not call_structured_websearch), so we script the
+# SDK client itself: every WebSearch turn yields the canned StructuredOutput. ---
+class _ToolBlock:
+    def __init__(self, payload):
+        self.name = "StructuredOutput"
+        self.input = payload
+
+
+class _Assistant:
+    def __init__(self, content):
+        self.content = content
+
+
+class _Result:
+    def __init__(self):
+        self.total_cost_usd = 0.001
+        self.usage = {"input_tokens": 1, "output_tokens": 1}
+        self.is_error = False
+
+
+class _FakeWSClient:
+    def __init__(self, options=None):
+        self.options = options
+
+    async def connect(self):
+        pass
+
+    async def disconnect(self):
+        pass
+
+    async def query(self, user):
+        self._last = user
+
+    def receive_response(self):
+        return self._gen()
+
+    async def _gen(self):
+        yield _Assistant([_ToolBlock(dict(_WEBSEARCH_RESULT))])
+        yield _Result()
 
 
 def test_loop_runs_with_real_brains(tmp_path, monkeypatch):
     monkeypatch.setattr(sdk_client, "call_structured", _fake_call_structured)
     monkeypatch.setattr(sdk_client, "call_structured_websearch", _fake_websearch)
+    # The real researcher's async fan-out uses the AsyncSessionPool/ClaudeSession;
+    # patch the SDK client so it never spawns a real `claude` (offline + free).
+    monkeypatch.setattr(sdk_client, "ClaudeSDKClient", _FakeWSClient)
 
     final = run_loop(
         ResearchState(run_id="r-real", original_question="Can AI research overnight?"),

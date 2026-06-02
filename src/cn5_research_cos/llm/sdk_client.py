@@ -78,6 +78,23 @@ _patch_anyio_no_console()
 # Default cheap/Haiku-tier model for the clarification front-end.
 DEFAULT_MODEL = os.environ.get("CN5_COS_LLM_MODEL", "haiku")
 
+# P2 acceleration increment 2: hard ceiling on concurrent live `claude` sessions
+# per (model, tools, schema) key. Bounds parallel subprocess spawns so the
+# subscription rate limit is respected. Overridable via env for live tuning.
+DEFAULT_MAX_CONCURRENT = 3
+
+
+def _max_concurrent() -> int:
+    raw = os.environ.get("CN5_COS_MAX_CONCURRENT")
+    if raw:
+        try:
+            v = int(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return DEFAULT_MAX_CONCURRENT
+
 # Environment handed to every SDK call.
 _SDK_ENV: dict[str, str] = {
     "CLAUDECODE": "",
@@ -539,6 +556,35 @@ class ClaudeSession:
             pass
         self._loop = None
 
+    def _finish_turn(self, result: dict, *, wall: float, brain: str,
+                     effective_schema: dict | None):
+        """Shared post-turn handling (metrics + structured/text extraction).
+
+        Used by BOTH the sync ``ask`` and the async ``ask_async`` so the contract
+        (record metrics, return structured dict or text, raise rather than
+        fabricate) is identical on both paths.
+        """
+        if self._metrics is not None:
+            self._metrics.record(
+                cost_usd=result.get("cost_usd"), wall_s=wall,
+                brain=brain, usage=result.get("usage"),
+            )
+        if effective_schema is not None:
+            structured = result.get("structured")
+            if structured is None:
+                raise LLMUnavailableError(
+                    f"SDK session turn returned no structured output "
+                    f"(is_error={result.get('is_error')}, "
+                    f"text_len={len(result.get('text', ''))})"
+                )
+            return structured
+        text = result.get("text", "")
+        if not text:
+            raise LLMUnavailableError(
+                f"SDK session turn returned empty text (brain={brain})"
+            )
+        return text
+
     def ask(self, user: str, *, schema: dict | None = None, brain: str = "unknown"):
         """Run one turn on the live client. ``schema`` overrides the session's
         default schema for this turn (used when one session serves brains with
@@ -569,30 +615,274 @@ class ClaudeSession:
                 continue
 
             wall = _time.monotonic() - t0
-            if self._metrics is not None:
-                self._metrics.record(
-                    cost_usd=result.get("cost_usd"), wall_s=wall,
-                    brain=brain, usage=result.get("usage"),
-                )
-
-            if effective_schema is not None:
-                structured = result.get("structured")
-                if structured is None:
-                    raise LLMUnavailableError(
-                        f"SDK session turn returned no structured output "
-                        f"(is_error={result.get('is_error')}, "
-                        f"text_len={len(result.get('text', ''))})"
-                    )
-                return structured
-            text = result.get("text", "")
-            if not text:
-                raise LLMUnavailableError(
-                    f"SDK session turn returned empty text (brain={brain})"
-                )
-            return text
+            return self._finish_turn(
+                result, wall=wall, brain=brain, effective_schema=effective_schema
+            )
 
         raise LLMUnavailableError(
             f"SDK session turn failed after {self._max_attempts} attempts "
             f"(brain={brain}): {type(last_exc).__name__ if last_exc else 'unknown'}: "
             f"{last_exc}"
         )
+
+    # ----- async path -----------------------------------------------------
+    # Runs ON THE CALLER'S running event loop (no private-loop
+    # run_until_complete), so K researchers can asyncio.gather. The session must
+    # NOT have been entered via the sync __enter__ (which owns a private loop);
+    # use ``open_async`` / the pool.
+    async def _connect_async(self) -> None:
+        _load_sdk()
+        self._client = ClaudeSDKClient(options=self._build_options())
+        await self._client.connect()
+
+    async def _disconnect_async(self) -> None:
+        if self._client is not None:
+            try:
+                await self._client.disconnect()
+            except Exception:
+                pass
+            self._client = None
+
+    @classmethod
+    def open_async(cls, **kwargs) -> "_AsyncSessionCtx":
+        """``async with ClaudeSession.open_async(...) as s: await s.ask_async(...)``.
+
+        Connects on the caller's running loop and disconnects on exit. Distinct
+        from the sync ``with`` form (which owns a private loop) so it is safe to
+        use inside an ``asyncio.gather`` fan-out.
+        """
+        return _AsyncSessionCtx(cls(**kwargs))
+
+    async def ask_async(self, user: str, *, schema: dict | None = None,
+                        brain: str = "unknown"):
+        """Run ONE turn on the caller's running event loop and return the
+        structured dict (or text). Same retry/reconnect + no-fabrication contract
+        as ``ask``, but ``await``-able so the researcher fan-out can overlap.
+        """
+        import asyncio as _asyncio
+        import time as _time
+
+        effective_schema = schema if schema is not None else self._schema
+        last_exc: Exception | None = None
+        for attempt in range(1, self._max_attempts + 1):
+            t0 = _time.monotonic()
+            try:
+                result = await _session_turn(self._client, user, self._timeout)
+            except Exception as exc:  # noqa: BLE001 - transport/process error
+                last_exc = exc
+                if attempt < self._max_attempts:
+                    wait = min(60.0, self._backoff_base * (2 ** (attempt - 1)))
+                    if wait > 0:
+                        await _asyncio.sleep(wait)
+                    # reconnect a (possibly dead) session before retrying
+                    await self._disconnect_async()
+                    try:
+                        await self._connect_async()
+                    except Exception:
+                        pass
+                continue
+
+            wall = _time.monotonic() - t0
+            return self._finish_turn(
+                result, wall=wall, brain=brain, effective_schema=effective_schema
+            )
+
+        raise LLMUnavailableError(
+            f"SDK session turn failed after {self._max_attempts} attempts "
+            f"(brain={brain}): {type(last_exc).__name__ if last_exc else 'unknown'}: "
+            f"{last_exc}"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Async session context + bounded multi-session pool (P2 accel increment 2)
+# --------------------------------------------------------------------------- #
+class _AsyncSessionCtx:
+    """Async context manager wrapping a ClaudeSession for the async path:
+    connects on enter (caller's running loop), disconnects on exit."""
+
+    def __init__(self, session: "ClaudeSession") -> None:
+        self._session = session
+
+    async def __aenter__(self) -> "ClaudeSession":
+        try:
+            await self._session._connect_async()
+        except Exception as e:  # noqa: BLE001
+            raise LLMUnavailableError(
+                f"ClaudeSession async connect failed: {type(e).__name__}: {e}"
+            ) from e
+        return self._session
+
+    async def __aexit__(self, *exc) -> None:
+        await self._session._disconnect_async()
+
+
+class AsyncSessionPool:
+    """Bounded multi-session pool keyed by ``(model, tools, schema)``.
+
+    Per key, allow up to ``MAX_CONCURRENT`` (env ``CN5_COS_MAX_CONCURRENT``,
+    default 3) LIVE ``claude`` sessions, guarded by an ``asyncio.Semaphore``.
+    ``acquire(...)`` is an async context manager that:
+
+    * takes a permit (the semaphore is the HARD ceiling on parallel spawns);
+    * reuses an idle session for that key if one is free, else connects a new
+      one (we are necessarily under the cap because we hold a permit);
+    * ALWAYS returns the session to the key's idle list AND releases the permit
+      on exit — on success AND on exception — so a failed call never leaks a
+      permit / deadlocks the pool.
+
+    A session that died (connect/turn error left ``_client is None``) is dropped
+    instead of being returned to the idle list, and the permit is still released.
+    """
+
+    def __init__(self, *, metrics: Any = None, timeout_sec: int = 300,
+                 max_concurrent: int | None = None) -> None:
+        self._metrics = metrics
+        self._timeout = timeout_sec
+        self._cap = max_concurrent if max_concurrent is not None else _max_concurrent()
+        # per-key: semaphore (concurrency permits) + idle session free-list.
+        self._sems: dict[tuple, "asyncio.Semaphore"] = {}
+        self._idle: dict[tuple, list[ClaudeSession]] = {}
+        self._all: list[ClaudeSession] = []
+
+    @staticmethod
+    def _key(schema: dict | None, tools: list[str] | None, model: str) -> tuple:
+        return SessionPool._key(schema, tools, model)
+
+    def _sem_for(self, key: tuple) -> "asyncio.Semaphore":
+        sem = self._sems.get(key)
+        if sem is None:
+            sem = asyncio.Semaphore(self._cap)
+            self._sems[key] = sem
+            self._idle[key] = []
+        return sem
+
+    def acquire(self, *, system: str, schema: dict | None,
+                allowed_tools: list[str] | None, model: str | None,
+                max_turns: int | None = None, max_attempts: int = 5,
+                backoff_base: float = 3.0) -> "_PoolAcquire":
+        used_model = model or DEFAULT_MODEL
+        key = self._key(schema, allowed_tools, used_model)
+        self._sem_for(key)  # ensure semaphore + idle list exist
+        return _PoolAcquire(
+            self, key, system=system, schema=schema,
+            allowed_tools=allowed_tools, model=used_model,
+            max_turns=max_turns, max_attempts=max_attempts,
+            backoff_base=backoff_base,
+        )
+
+    async def _checkout(self, key, *, system, schema, allowed_tools, model,
+                        max_turns, max_attempts, backoff_base) -> "ClaudeSession":
+        """Reuse an idle session for ``key`` or connect a new one (under cap)."""
+        idle = self._idle[key]
+        if idle:
+            return idle.pop()
+        sess = ClaudeSession(
+            system=system, model=model, schema=schema,
+            allowed_tools=allowed_tools, timeout_sec=self._timeout,
+            max_attempts=max_attempts, max_turns=max_turns,
+            metrics=self._metrics, backoff_base=backoff_base,
+        )
+        await sess._connect_async()
+        self._all.append(sess)
+        return sess
+
+    def _checkin(self, key, sess: "ClaudeSession") -> None:
+        """Return a session to the idle list if still live; else drop it."""
+        if getattr(sess, "_client", None) is not None:
+            self._idle[key].append(sess)
+        else:
+            try:
+                self._all.remove(sess)
+            except ValueError:
+                pass
+
+    async def run_with_retry(self, user: str, *, system: str, schema: dict | None,
+                             allowed_tools: list[str] | None, model: str | None,
+                             max_attempts: int = 5, backoff_base: float = 3.0,
+                             max_turns: int | None = None, brain: str = "unknown",
+                             on_event=None):
+        """Acquire -> ONE turn -> release; on a retryable transport error RELEASE
+        the permit (exit the acquire), back off OUTSIDE the permit, then
+        re-acquire and retry. Task 3(a): the semaphore is freed before the retry
+        waits, so a backing-off task does not hold a slot — and never deadlocks.
+
+        Each attempt runs a single-turn ``ask_async`` (``max_attempts=1`` on the
+        session) so retry/backoff lives HERE, between permit holds, not inside the
+        held session. The final failure propagates after the permit is released.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                async with self.acquire(
+                    system=system, schema=schema, allowed_tools=allowed_tools,
+                    model=model, max_turns=max_turns, max_attempts=1,
+                    backoff_base=0.0,
+                ) as sess:
+                    if on_event is not None:
+                        on_event(f"{user}-start")
+                    result = await sess.ask_async(user, schema=schema, brain=brain)
+                if on_event is not None:
+                    on_event(f"{user}-done")
+                return result
+            except Exception as exc:  # noqa: BLE001 - permit already released here
+                last_exc = exc
+                if attempt < max_attempts:
+                    wait = min(60.0, backoff_base * (2 ** (attempt - 1)))
+                    if wait > 0:
+                        # Backoff happens with NO permit held (we left the `with`).
+                        await asyncio.sleep(wait)
+                    continue
+                raise
+        # Unreachable (loop either returns or raises), but keep the type checker happy.
+        raise last_exc  # type: ignore[misc]
+
+    async def aclose(self) -> None:
+        """Disconnect every session the pool ever created."""
+        for sess in list(self._all):
+            await sess._disconnect_async()
+        self._all.clear()
+        self._idle.clear()
+        self._sems.clear()
+
+
+class _PoolAcquire:
+    """Async context manager returned by ``AsyncSessionPool.acquire``.
+
+    Holds a permit for the whole ``async with`` body, hands back a live session,
+    and on exit returns the session + releases the permit unconditionally (so an
+    exception in the body never leaks a permit)."""
+
+    def __init__(self, pool: "AsyncSessionPool", key: tuple, *, system, schema,
+                 allowed_tools, model, max_turns, max_attempts, backoff_base):
+        self._pool = pool
+        self._key = key
+        self._kw = dict(
+            system=system, schema=schema, allowed_tools=allowed_tools,
+            model=model, max_turns=max_turns, max_attempts=max_attempts,
+            backoff_base=backoff_base,
+        )
+        self._sess: ClaudeSession | None = None
+        self._sem = pool._sems[key]
+        self._have_permit = False
+
+    async def __aenter__(self) -> "ClaudeSession":
+        await self._sem.acquire()
+        self._have_permit = True
+        try:
+            self._sess = await self._pool._checkout(self._key, **self._kw)
+        except Exception:
+            # connect failed: release the permit so we don't leak it.
+            self._sem.release()
+            self._have_permit = False
+            raise
+        return self._sess
+
+    async def __aexit__(self, *exc) -> None:
+        try:
+            if self._sess is not None:
+                self._pool._checkin(self._key, self._sess)
+        finally:
+            if self._have_permit:
+                self._sem.release()
+                self._have_permit = False
