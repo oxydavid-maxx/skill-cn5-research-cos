@@ -34,8 +34,15 @@ DEFAULT_DEPTH = 2
 # --------------------------------------------------------------------------- #
 # Nodes
 # --------------------------------------------------------------------------- #
-def _brains():
-    return build_brains("mock")
+def _brains(state: GraphState | None = None):
+    """Resolve the brain bundle for this run.
+
+    The bundle is selected by GraphState['llm'] ('mock' default keeps the P1
+    deterministic loop unchanged; 'real' injects the P2b cheap-LLM brains). The
+    graph topology + all loop/COS control are IDENTICAL for both.
+    """
+    llm = (state or {}).get("llm", "mock") if isinstance(state, dict) else "mock"
+    return build_brains(llm or "mock")
 
 
 def node_intake(state: GraphState) -> GraphState:
@@ -50,21 +57,21 @@ def node_intake(state: GraphState) -> GraphState:
 
 def node_scope(state: GraphState) -> GraphState:
     rs = state["research_state"]
-    _brains().clarify_gate.check(rs)  # P1: always clarified
+    _brains(state).clarify_gate.check(rs)  # P1: always clarified
     return {"research_state": rs}
 
 
 def node_write_brief(state: GraphState) -> GraphState:
     rs = state["research_state"]
     if not rs.research_brief:
-        _brains().brief_writer.write(rs)
+        _brains(state).brief_writer.write(rs)
     return {"research_state": rs}
 
 
 def node_issue_expansion(state: GraphState) -> GraphState:
     rs = state["research_state"]
     now = state.get("now", "t")
-    _brains().issue_expander.expand(rs, now=now)
+    _brains(state).issue_expander.expand(rs, now=now)
     prereqs = dict(state.get("prereqs", {}))
     prereqs["broad_expansion"] = True
     return {"research_state": rs, "prereqs": prereqs}
@@ -78,16 +85,19 @@ def node_supervisor(state: GraphState) -> GraphState:
 
 def _fanout_payload(state: GraphState):
     rs = state["research_state"]
-    selected = _brains().supervisor.select(rs)
+    selected = _brains(state).supervisor.select(rs)
     now = state.get("now", "t")
+    llm = state.get("llm", "mock")
     return [
         Send(
             "worker",
             {
                 "issue_id": iid,
                 "issue_title": rs.issue_map[iid].title,
+                "issue_description": rs.issue_map[iid].description,
                 "iteration_count": rs.iteration_count,
                 "now": now,
+                "llm": llm,
             },
         )
         for iid in selected
@@ -109,15 +119,16 @@ def node_worker(payload: dict) -> GraphState:
     merges across parallel Sends). P1 runs these via Send fan-out; P4 flips on
     real parallelism without changing this shape.
     """
-    brains = _brains()
-    # Build a throwaway ResearchState carrying just enough for the stub researcher
+    brains = _brains({"llm": payload.get("llm", "mock")})
+    # Build a throwaway ResearchState carrying just enough for the researcher
     # (issue title + iteration count) — context isolation per ODR supervisor pattern.
     proxy = ResearchState(run_id="_worker", original_question="")
     proxy.iteration_count = payload["iteration_count"]
     from .models import IssueNode
     proxy.issue_map[payload["issue_id"]] = IssueNode(
         id=payload["issue_id"], title=payload["issue_title"],
-        description=payload["issue_title"], issue_type=IssueType.technical,
+        description=payload.get("issue_description") or payload["issue_title"],
+        issue_type=IssueType.technical,
         status=IssueStatus.researching, impact=3, confidence=2,
     )
     bundle = brains.researcher.research(proxy, payload["issue_id"])
@@ -152,7 +163,7 @@ def node_skeptic(state: GraphState) -> GraphState:
     rs = state["research_state"]
     prereqs = dict(state.get("prereqs", {}))
     last = rs.evidence[-1] if rs.evidence else EvidenceBundle(query="")
-    counters = _brains().skeptic.counter(rs, last)
+    counters = _brains(state).skeptic.counter(rs, last)
     for n in rs.issue_map.values():
         if n.status != IssueStatus.answered:
             for c in counters:
@@ -166,7 +177,7 @@ def node_albert_audit(state: GraphState) -> GraphState:
     rs = state["research_state"]
     prereqs = dict(state.get("prereqs", {}))
     now = state.get("now", "t")
-    audit = _brains().auditor.audit(rs)
+    audit = _brains(state).auditor.audit(rs)
     rs.last_audit = audit
     # Record challenges into the challenge map.
     from .artifacts import challenge_map
@@ -206,7 +217,7 @@ def node_artifact_update(state: GraphState) -> GraphState:
 
 def node_readiness_scoring(state: GraphState) -> GraphState:
     rs = state["research_state"]
-    score = _brains().scorer.score(rs)
+    score = _brains(state).scorer.score(rs)
     rs.readiness_score = score
     s = (score.albert_challenge_readiness + score.decision_readiness
          + score.research_exhaustion_readiness + score.human_bottleneck_clarity)
@@ -368,6 +379,7 @@ def run_loop(
     base_dir,
     max_iterations: int = 8,
     now: str = "t",
+    llm: str = "mock",
 ) -> ResearchState:
     app = compile_graph()
     init: GraphState = {
@@ -375,6 +387,7 @@ def run_loop(
         "base_dir": str(base_dir),
         "now": now,
         "max_iterations": max_iterations,
+        "llm": llm,
     }
     out = app.invoke(init, config={"recursion_limit": 100})
     final = out["research_state"]

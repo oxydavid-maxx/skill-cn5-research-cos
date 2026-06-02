@@ -24,3 +24,4 @@ class GraphState(TypedDict, total=False):
     base_dir: str
     now: str
     max_iterations: int
+    llm: str
