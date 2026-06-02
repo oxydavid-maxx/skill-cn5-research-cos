@@ -1,0 +1,35 @@
+# tests/fixtures/paperwork-survey/reference-map.yaml
+# Minimal committed mirror of a real paperwork:reference-discovery output, for
+# deterministic tier-1 consume tests. Role enum + requirement_topics +
+# coverage_gaps shape match the real i3c-competitor-survey gateway artifact.
+request_id: sample-i3c-survey
+artifact_targets:
+  - sample-i3c-survey
+
+requirement_topics:
+  - i2c-backward-compatibility
+  - dynamic-address-assignment
+  - ibi-in-band-interrupt
+
+coverage_gaps:
+  - topic: vendor-i3c-ip-cross-comparison
+    note: >
+      No vendor I3C IP datasheet acquired; §4 matrix is one-sided.
+
+references:
+  - reference_id: mipi-i3c-spec
+    title: MIPI Alliance Specification for I3C, Version 1.2
+    default_path: reference/pdf/mipi-i3c-spec-v1-2.pdf
+    role_proposed: standard
+    role_confirmed: standard
+    coverage_tags:
+      - i2c-backward-compatibility
+      - dynamic-address-assignment
+
+  - reference_id: nxp-i3c-intro
+    title: NXP Tech Days 2022 — Introduction to MIPI I3C
+    default_path: reference/pdf/nxp-tech-days-2022-i3c-intro.pdf
+    role_proposed: application-note
+    role_confirmed: application-note
+    coverage_tags:
+      - ibi-in-band-interrupt

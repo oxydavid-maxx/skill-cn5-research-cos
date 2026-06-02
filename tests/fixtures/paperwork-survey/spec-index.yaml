@@ -1,0 +1,28 @@
+# tests/fixtures/paperwork-survey/spec-index.yaml
+# Minimal per-fragment index mirroring the real shape (source_pages +
+# fragment_path + coverage_tags per fragment).
+references:
+  - reference_id: mipi-i3c-spec
+    title: MIPI Alliance Specification for I3C, Version 1.2
+    sections:
+      - section_id: intro
+        title: §2 Introduction (Scope, Key Features)
+        source_pages: [22, 23, 24]
+        fragment_path: reference/fragments/sample-spec/intro.md
+        extraction_method: pymupdf4llm
+        confidence: high
+        coverage_tags:
+          - i2c-backward-compatibility
+          - dynamic-address-assignment
+
+  - reference_id: nxp-i3c-intro
+    title: NXP Tech Days 2022 — Introduction to MIPI I3C
+    sections:
+      - section_id: ibi
+        title: §5 In-Band Interrupt
+        source_pages: [11, 12]
+        fragment_path: reference/fragments/sample-spec/ibi.md
+        extraction_method: pymupdf4llm
+        confidence: medium
+        coverage_tags:
+          - ibi-in-band-interrupt
