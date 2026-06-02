@@ -233,6 +233,8 @@ class ResearchState(BaseModel):
     readiness_history: list[dict] = Field(default_factory=list)
     iteration_count: int = 0
     last_audit: AuditResult | None = None
+    # P3 audit tiering: how many times the Tier-2 deep audit ran (only at gates).
+    deep_audit_count: int = 0
 
     # research dedup seen-set: research-query strings (issue titles) already
     # dispatched this run, so the supervisor never re-researches the same query

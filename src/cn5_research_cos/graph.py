@@ -25,13 +25,14 @@ import sqlite3
 from pathlib import Path
 
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from .artifacts import issue_map
 from .brains import build_brains
 from .llm import sdk_client
-from .decision import anti_premature, branch_budget, exhaustion, gate
-from .models import (Decision, EvidenceBundle, IssueStatus, IssueType,
-                     ResearchState)
+from .decision import anti_premature, branch_budget, exhaustion, gate, risk
+from .models import (Decision, EvidenceBundle, HumanTask, HumanTaskStatus,
+                     IssueStatus, IssueType, ResearchState)
 from .state import GraphState
 from .store import save_snapshot
 
@@ -406,6 +407,203 @@ def _materialize_competitor(rs: ResearchState, now: str, budget: dict) -> dict:
     return {"breadth": b.breadth, "depth": b.depth}
 
 
+# --------------------------------------------------------------------------- #
+# P3 Human Steering Layer (H1/H2/H3/H5/H6) — gate nodes
+# --------------------------------------------------------------------------- #
+def _pending_pull(rs: ResearchState) -> dict | None:
+    """Return the oldest unconsumed ``request_pull`` steering event, or None."""
+    for e in rs.steering_events:
+        if e.get("kind") == "request_pull" and not e.get("consumed"):
+            return e
+    return None
+
+
+def _build_pull_payload(rs: ResearchState, decision: Decision) -> dict:
+    """Compose the §9.1 human-pull ask payload from a pending request_pull event,
+    falling back to a generic decision ask when none is queued."""
+    ev = _pending_pull(rs)
+    if ev is not None:
+        return {
+            "context": ev.get("context", ""),
+            "why": ev.get("why", ""),
+            "options": list(ev.get("options", ["A", "B", "C"])),
+            "ai_recommendation": ev.get("ai_recommendation", ""),
+            "impact_per_option": dict(ev.get("impact_per_option", {})),
+            "default_if_no_response": ev.get("default_if_no_response", ""),
+        }
+    # Generic fallback (audit-driven pull): minimal but complete shape.
+    return {
+        "context": f"研究方向需人類定奪（{rs.original_question}）",
+        "why": "決策準則不明或多條高影響路徑互斥",
+        "options": ["A: 採用 AI 建議", "B: 改變方向", "C: 暫停等更多資訊"],
+        "ai_recommendation": "A",
+        "impact_per_option": {},
+        "default_if_no_response": rs.fallback_behavior_if_human_unavailable or "A",
+    }
+
+
+def _record_pull_answer(rs: ResearchState, payload: dict, answer) -> None:
+    """Record a resumed human answer + consume the request_pull event."""
+    if isinstance(answer, dict):
+        choice = answer.get("choice")
+        text = answer.get("answer", "")
+    else:
+        choice = answer
+        text = str(answer) if answer is not None else ""
+    rs.steering_events.append({
+        "kind": "pull_answer",
+        "choice": choice,
+        "answer": text,
+        "for_context": payload.get("context", ""),
+    })
+    ev = _pending_pull(rs)
+    if ev is not None:
+        ev["consumed"] = True
+
+
+def node_human_pull(state: GraphState) -> GraphState:
+    """H1/H2/H5 pull gate.
+
+    INTERACTIVE: always ``interrupt(payload)`` — pause the run; the CLI prints the
+    ask and exits; ``cos resume`` resumes via ``Command(resume=...)``.
+
+    AUTO: classify the pull. ``low`` → apply ``default_if_no_response`` and record
+    a ``steering_event(auto-default)`` (no interrupt, the loop continues). ``high``
+    → still ``interrupt`` (hard-stop — never burn overnight on a wrong high-impact
+    direction).
+
+    The value returned by ``interrupt`` (the human's answer, supplied via
+    ``Command(resume=...)``) is recorded as a ``pull_answer`` steering event and
+    flows into the next iteration's decision.
+    """
+    rs = state["research_state"]
+    mode = state.get("mode", rs.mode or "interactive")
+    payload = _build_pull_payload(rs, Decision.pull_human)
+
+    if mode == "auto" and risk.classify_pull(rs, Decision.pull_human) == "low":
+        default = payload.get("default_if_no_response", "")
+        rs.steering_events.append({
+            "kind": "auto-default",
+            "choice": default,
+            "answer": default,
+            "for_context": payload.get("context", ""),
+        })
+        ev = _pending_pull(rs)
+        if ev is not None:
+            ev["consumed"] = True
+        return {"research_state": rs}
+
+    # interactive, or auto+high → pause for a real human answer.
+    answer = interrupt(payload)
+    _record_pull_answer(rs, payload, answer)
+    return {"research_state": rs}
+
+
+def node_human_push(state: GraphState) -> GraphState:
+    """H3 push-human gate (NON-blocking, **Test 2**).
+
+    Create a §9.2 ``HumanTask`` for the residual blocker, mark the blocking issue
+    ``blocked_by_internal_data`` (so the supervisor skips it), and CONTINUE — the
+    loop researches an adjacent non-blocked branch. No interrupt.
+    """
+    rs = state["research_state"]
+    now = state.get("now", "t")
+    # Pick the highest-impact still-addressable issue that needs internal data as
+    # the one to hand off. ``coverage_gaps`` mentioning 內部資料 is the P2b signal;
+    # fall back to the highest-impact open issue.
+    target = None
+    for n in sorted(rs.issue_map.values(), key=lambda x: x.impact, reverse=True):
+        if n.status in (IssueStatus.open, IssueStatus.researching,
+                        IssueStatus.partially_answered, IssueStatus.low_confidence):
+            target = n
+            break
+    if target is not None:
+        tid = "HT-%03d" % (len(rs.human_tasks) + 1)
+        rs.human_tasks[tid] = HumanTask(
+            id=tid,
+            task_title=f"提供內部資料：{target.title}",
+            owner=None,
+            requested_input="內部資料 / 受限文件",
+            why_needed=f"問題「{target.title}」需要外部研究無法取得的內部資料",
+            blocking_question=target.title,
+            priority=target.impact,
+            can_continue_without_it=True,
+            fallback_plan="先研究相鄰未受阻的問題，待人類回填內部資料後再續",
+            status=HumanTaskStatus.open,
+        )
+        issue_map.set_status(rs, target.id, IssueStatus.blocked_by_internal_data, now=now)
+        if "已建立 HumanTask（內部資料）" not in target.human_blockers:
+            target.human_blockers.append("已建立 HumanTask（內部資料）")
+    return {"research_state": rs}
+
+
+def node_deep_audit(state: GraphState) -> GraphState:
+    """Tier 2 deep audit — runs ONLY at this deterministic gate (before
+    synthesize/terminal via human_review, or before a HIGH-risk human_pull).
+
+    In P3 the deep auditor is still the simulator/stub (real Albert FSM = P6); the
+    point of this node is the GATE PLACEMENT — the expensive audit runs only where
+    the cost matters, never on a mid-loop ``continue``. The mid-loop sentinel
+    (``node_albert_audit``) is unchanged and still runs every iteration.
+    """
+    rs = state["research_state"]
+    brains = _brains(state)
+    deep = getattr(brains, "deep_auditor", None)
+    if deep is None:
+        return {"research_state": rs}
+    audit = deep.audit(rs)
+    rs.last_audit = audit
+    rs.deep_audit_count = (getattr(rs, "deep_audit_count", 0) or 0) + 1
+    return {"research_state": rs}
+
+
+def _route_after_deep_audit(state: GraphState) -> str:
+    """Deep audit feeds either the high-risk pull gate or the H6 review seam,
+    depending on what decision triggered it."""
+    decision = state.get("last_decision", Decision.continue_research)
+    if decision == Decision.pull_human:
+        return "human_pull"
+    return "human_review"
+
+
+def node_human_review(state: GraphState) -> GraphState:
+    """H6 final-review seam: ``interrupt`` before synthesize/terminal.
+
+    The memo body is P5; here H6 is the wired interrupt point (confirm/revise).
+    AUTO mode does NOT pause here unless a high-risk audit demands it — an
+    overnight auto run is allowed to reach a terminal stop and report; the human
+    reviews the produced state afterwards. INTERACTIVE pauses for a confirm.
+    """
+    rs = state["research_state"]
+    mode = state.get("mode", rs.mode or "interactive")
+    # H6 interrupt is opt-in (``enable_h6``): the P1 ``run_loop`` (no checkpointer)
+    # must reach a terminal stop without pausing, so the default is pass-through.
+    # The CLI ``cos run`` (interactive, checkpointed) opts in.
+    enable_h6 = state.get("enable_h6", False)
+    audit = rs.last_audit
+    high_risk = audit is not None and (
+        audit.premature_end_risk.value == "high"
+        or audit.research_drift_risk.value == "high"
+    )
+    if not enable_h6:
+        return {"research_state": rs}
+    if mode == "auto" and not high_risk:
+        rs.steering_events.append({"kind": "auto-review-pass",
+                                   "answer": "auto 模式略過 H6 確認，直接產出"})
+        return {"research_state": rs}
+    decision = interrupt({
+        "context": "研究已收斂，準備產出最終 memo（P5 stub）",
+        "why": "H6：人類最終確認 / 修訂",
+        "options": ["confirm: 同意產出", "revise: 退回繼續研究"],
+        "ai_recommendation": "confirm",
+        "default_if_no_response": "confirm",
+    })
+    rs.steering_events.append({"kind": "review_decision",
+                               "answer": decision if isinstance(decision, str)
+                               else (decision or {}).get("answer", "confirm")})
+    return {"research_state": rs}
+
+
 def node_cos_decision(state: GraphState) -> GraphState:
     """Staged binary gates → a single Decision. Pure decision helpers do the logic;
     this node records the result and materializes the auditor-requested branch."""
@@ -414,6 +612,13 @@ def node_cos_decision(state: GraphState) -> GraphState:
     budget = dict(state.get("branch_budget", {"breadth": DEFAULT_BREADTH, "depth": DEFAULT_DEPTH}))
     now = state.get("now", "t")
     audit = rs.last_audit
+
+    # Stage 0: a pending H4 steering request_pull (or an audit recommending a
+    # pull) routes to the human_pull gate (H1/H2/H5). This is checked first so a
+    # human's explicit "ask me" outranks the automatic flow.
+    if _pending_pull(rs) or (audit is not None
+                             and audit.recommended_next_action == Decision.pull_human):
+        return {"research_state": rs, "last_decision": Decision.pull_human, "branch_budget": budget}
 
     # Stage 1: audit clean? A REWORK verdict forces a branch toward the gap.
     if audit is not None and audit.verdict.value == "rework":
@@ -452,16 +657,40 @@ def node_cos_decision(state: GraphState) -> GraphState:
 # Router (read-only)
 # --------------------------------------------------------------------------- #
 def _route(state: GraphState) -> str:
+    """Route from cos_decision to the next node.
+
+    Terminal/synthesize go through the H6 ``human_review`` seam first (the
+    interrupt point before the final memo). A pull routes to ``human_pull`` (H1/
+    H2/H5); a push routes to ``human_push`` (H3, non-blocking). branch/rerank
+    re-expand; everything else keeps researching.
+    """
     rs = state["research_state"]
     decision = state.get("last_decision", Decision.continue_research)
     max_it = state.get("max_iterations", 8)
-    if decision in (Decision.terminal_stop, Decision.synthesize):
-        return "END"
-    if rs.iteration_count >= max_it:
-        return "END"
+    # Terminal / synthesize / iteration-ceiling → run the Tier-2 deep audit, then
+    # the H6 review seam, then END.
+    if decision in (Decision.terminal_stop, Decision.synthesize) or rs.iteration_count >= max_it:
+        return "deep_audit"
+    if decision == Decision.pull_human:
+        # A HIGH-risk pull runs the deep audit first; a low-risk pull skips it.
+        if risk.classify_pull(rs, Decision.pull_human) == "high":
+            return "deep_audit"
+        return "human_pull"
+    if decision == Decision.push_human:
+        return "human_push"
     if decision in (Decision.branch, Decision.rerank):
         return "issue_expansion"
-    # pull_human / push_human / pause / continue_research → keep researching
+    # pause / continue_research → keep researching
+    return "supervisor"
+
+
+def _route_after_pull(state: GraphState) -> str:
+    """After a human_pull (resumed or auto-defaulted): keep researching, unless
+    the iteration ceiling is hit → go to the H6 review seam to wrap up."""
+    rs = state["research_state"]
+    max_it = state.get("max_iterations", 8)
+    if rs.iteration_count >= max_it:
+        return "human_review"
     return "supervisor"
 
 
@@ -483,6 +712,11 @@ def build_graph() -> StateGraph:
     g.add_node("readiness_scoring", node_readiness_scoring)
     g.add_node("anti_premature", node_anti_premature)
     g.add_node("cos_decision", node_cos_decision)
+    # P3 Human Steering Layer gate nodes.
+    g.add_node("human_pull", node_human_pull)
+    g.add_node("human_push", node_human_push)
+    g.add_node("deep_audit", node_deep_audit)
+    g.add_node("human_review", node_human_review)
 
     g.add_edge(START, "intake")
     g.add_edge("intake", "scope")
@@ -501,8 +735,28 @@ def build_graph() -> StateGraph:
     g.add_edge("anti_premature", "cos_decision")
     g.add_conditional_edges(
         "cos_decision", _route,
-        {"END": END, "issue_expansion": "issue_expansion", "supervisor": "supervisor"},
+        {
+            "issue_expansion": "issue_expansion",
+            "supervisor": "supervisor",
+            "human_pull": "human_pull",
+            "human_push": "human_push",
+            "deep_audit": "deep_audit",
+        },
     )
+    # Deep audit feeds either the high-risk pull gate or the H6 review seam.
+    g.add_conditional_edges(
+        "deep_audit", _route_after_deep_audit,
+        {"human_pull": "human_pull", "human_review": "human_review"},
+    )
+    # After a pull (resumed / auto-defaulted): keep researching, or wrap up at H6.
+    g.add_conditional_edges(
+        "human_pull", _route_after_pull,
+        {"supervisor": "supervisor", "human_review": "human_review"},
+    )
+    # H3 push-human is NON-blocking: continue an adjacent branch (supervisor).
+    g.add_edge("human_push", "supervisor")
+    # H6 review is the terminal seam → END (the P5 memo is gated here).
+    g.add_edge("human_review", END)
     return g
 
 
