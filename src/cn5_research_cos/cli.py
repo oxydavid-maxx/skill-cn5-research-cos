@@ -12,7 +12,7 @@ import typer
 from rich.console import Console
 
 from . import render
-from .graph import compile_with_checkpoint
+from .graph import apply_steer, compile_with_checkpoint, run_auto
 from .models import Decision, ResearchState
 from .sot import brief as sot_brief
 from .sot import clarifier as sot_clarifier
@@ -46,6 +46,26 @@ def init(
     console.print(f"[green]initialized[/green] run_id=[bold]{rid}[/bold]")
 
 
+def _print_pull_ask(rid: str, payload: dict) -> None:
+    """Print a §9.1 human-pull ask payload + how to resume (the run is PAUSED)."""
+    console.rule("[bold yellow]需要人類介入（PAUSED）[/bold yellow]")
+    console.print(f"[bold]背景：[/bold]{payload.get('context','')}")
+    console.print(f"[bold]為何要問：[/bold]{payload.get('why','')}")
+    console.print("[bold]選項：[/bold]")
+    for opt in payload.get("options", []):
+        console.print(f"  • {opt}")
+    console.print(f"[bold]AI 建議：[/bold]{payload.get('ai_recommendation','')}")
+    if payload.get("impact_per_option"):
+        console.print("[bold]各選項影響：[/bold]")
+        for k, v in payload["impact_per_option"].items():
+            console.print(f"  {k}: {v}")
+    console.print(f"[bold]無回應時的預設：[/bold]{payload.get('default_if_no_response','')}")
+    console.print("")
+    console.print("[dim]此 run 已暫停（PAUSED），state 已存於 checkpoint。回答後續跑：[/dim]")
+    console.print(f'  [green]cos resume {rid} --choice <A|B|C>[/green]  或  '
+                  f'[green]cos resume {rid} --answer "..."[/green]')
+
+
 @app.command()
 def run(
     question: str = typer.Option(None, "--question", "-q"),
@@ -54,8 +74,13 @@ def run(
     llm: str = typer.Option("mock", "--llm"),
     resume: bool = typer.Option(False, "--resume",
                                 help="從上次 checkpoint 續跑（需 --run-id），不重頭跑"),
+    resume_state: bool = typer.Option(False, "--resume-state",
+                                      help="從已存的 state.json 起一個互動式 run（需 --run-id）"),
 ):
-    """跑完整研究收斂迴圈，逐輪印出中文 summary，最後印停止原因 + 四項 readiness 分數。"""
+    """跑研究收斂迴圈（互動式）：跑到 gate interrupt 就暫停並印 ask payload + 如何 resume。
+
+    無 gate 時跑到收斂，逐輪印中文 summary，最後印停止原因 + 四項 readiness 分數。
+    """
     if llm not in ("mock", "real"):
         console.print(f"[red]--llm 僅支援 mock|real；收到 {llm!r}[/red]")
         raise typer.Exit(code=2)
@@ -66,7 +91,7 @@ def run(
     final_state: ResearchState | None = None
     last_decision: Decision | None = None
     last_printed_iter = -1
-    cfg_base = {"recursion_limit": 100}
+    cfg_base = {"recursion_limit": 200}
 
     if resume:
         if not run_id:
@@ -76,9 +101,27 @@ def run(
         app_graph, _saver, conn = compile_with_checkpoint(os.path.join(base_dir, rid))
         cfg = {**cfg_base, "configurable": {"thread_id": rid}}
         stream_input = None  # replay from checkpoint, do not restart
+    elif resume_state:
+        if not run_id:
+            console.print("[red]--resume-state 需要 --run-id[/red]")
+            raise typer.Exit(code=2)
+        rid = run_id
+        try:
+            initial = load_snapshot(rid, base_dir=base_dir)
+        except FileNotFoundError as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(code=1)
+        initial.mode = "interactive"
+        app_graph, _saver, conn = compile_with_checkpoint(os.path.join(base_dir, rid))
+        cfg = {**cfg_base, "configurable": {"thread_id": rid}}
+        stream_input: GraphState | None = {
+            "research_state": initial, "base_dir": base_dir, "now": now,
+            "max_iterations": max_iterations, "llm": llm,
+            "mode": "interactive", "enable_h6": True,
+        }
     else:
         if not question:
-            console.print("[red]--question 為必填（除非 --resume）[/red]")
+            console.print("[red]--question 為必填（除非 --resume / --resume-state）[/red]")
             raise typer.Exit(code=2)
         rid = run_id or "run-" + now.replace(":", "").replace("-", "")
         initial = ResearchState(run_id=rid, original_question=question,
@@ -86,11 +129,9 @@ def run(
         app_graph, _saver, conn = compile_with_checkpoint(os.path.join(base_dir, rid))
         cfg = {**cfg_base, "configurable": {"thread_id": rid}}
         stream_input: GraphState | None = {
-            "research_state": initial,
-            "base_dir": base_dir,
-            "now": now,
-            "max_iterations": max_iterations,
-            "llm": llm,
+            "research_state": initial, "base_dir": base_dir, "now": now,
+            "max_iterations": max_iterations, "llm": llm,
+            "mode": "interactive", "enable_h6": True,
         }
 
     from .llm import sdk_client
@@ -122,6 +163,16 @@ def run(
                 _stream()
         else:
             _stream()
+
+        # Did a gate interrupt() pause the run? If so, print the ask + how to resume.
+        snap = app_graph.get_state(cfg)
+        if snap.next:
+            payload = snap.interrupts[0].value if snap.interrupts else {}
+            paused_state = snap.values.get("research_state")
+            if paused_state is not None:
+                save_snapshot(paused_state, base_dir=base_dir)
+            _print_pull_ask(rid, payload)
+            return
     finally:
         conn.close()
 
@@ -140,6 +191,104 @@ def run(
     # real $ + wall-clock; a mock run prints zeros, which is also useful signal).
     console.print("")
     console.print(f"[dim]{metrics.summary_line()}[/dim]")
+
+
+@app.command()
+def resume(
+    run_id: str = typer.Argument(...),
+    answer: str = typer.Option(None, "--answer", "-a", help="自由文字回答 gate 的提問"),
+    choice: str = typer.Option(None, "--choice", "-c", help="選項代號 A/B/C"),
+    max_iterations: int = typer.Option(8, "--max-iterations"),
+):
+    """回答一個暫停中的 gate：Command(resume=...) 從 checkpoint 續跑（不重頭）。"""
+    if answer is None and choice is None:
+        console.print("[red]需要 --answer 或 --choice 至少一個[/red]")
+        raise typer.Exit(code=2)
+    from langgraph.types import Command
+
+    base_dir = _base_dir()
+    app_graph, _saver, conn = compile_with_checkpoint(os.path.join(base_dir, run_id))
+    cfg = {"recursion_limit": 200, "configurable": {"thread_id": run_id}}
+    resume_value = {"choice": choice, "answer": answer or ""}
+    final_state = None
+    try:
+        snap0 = app_graph.get_state(cfg)
+        if not snap0.next:
+            console.print(f"[yellow]run {run_id} 沒有暫停中的 gate（可能已完成）[/yellow]")
+            raise typer.Exit(code=1)
+        for chunk in app_graph.stream(Command(resume=resume_value), config=cfg,
+                                      stream_mode="values"):
+            rs = chunk.get("research_state")
+            if rs is not None:
+                final_state = rs
+        snap = app_graph.get_state(cfg)
+        if final_state is not None:
+            save_snapshot(final_state, base_dir=base_dir)
+        if snap.next:
+            payload = snap.interrupts[0].value if snap.interrupts else {}
+            console.print(f"[yellow]續跑後又遇到下一個 gate（PAUSED）[/yellow]")
+            _print_pull_ask(run_id, payload)
+            return
+    finally:
+        conn.close()
+    console.print(f"[green]已回答並續跑[/green] run_id={run_id} "
+                  f"choice={choice!r} answer={answer!r}")
+    if final_state is not None:
+        console.print(f"目前 iteration={final_state.iteration_count}")
+
+
+@app.command()
+def steer(
+    run_id: str = typer.Argument(...),
+    text: str = typer.Argument(..., help="臨時導引指令（H4），下一輪 COS 會重排/分支"),
+):
+    """注入一個臨時導引事件（H4）：append 到 checkpointed state，下一輪重排。"""
+    base_dir = _base_dir()
+    now = _now()
+    try:
+        state = load_snapshot(run_id, base_dir=base_dir)
+    except FileNotFoundError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(code=1)
+    apply_steer(state, text, now=now)
+    save_snapshot(state, base_dir=base_dir)
+    console.print(f"[green]已注入 steer 事件[/green] run_id={run_id}：{text}")
+    console.print("[dim]下一次 cos run --resume / run-auto 的下一輪會重排。[/dim]")
+
+
+@app.command("run-auto")
+def run_auto_cmd(
+    question: str = typer.Option(..., "--question", "-q"),
+    run_id: str = typer.Option(None, "--run-id"),
+    max_iterations: int = typer.Option(8, "--max-iterations"),
+    llm: str = typer.Option("mock", "--llm"),
+    default_priority: str = typer.Option(None, "--default-priority",
+                                         help="auto 模式無人時的預設研究優先序"),
+):
+    """隔夜 AUTO 模式：低風險 gate 自動套預設、高風險硬停（可 resume）；印每輪 + 停止原因。"""
+    if llm not in ("mock", "real"):
+        console.print(f"[red]--llm 僅支援 mock|real；收到 {llm!r}[/red]")
+        raise typer.Exit(code=2)
+    now = _now()
+    base_dir = _base_dir()
+    rid = run_id or "run-" + now.replace(":", "").replace("-", "")
+    initial = ResearchState(run_id=rid, original_question=question,
+                            mode="auto", created_at=now, updated_at=now)
+    result = run_auto(initial, base_dir=base_dir, max_iterations=max_iterations,
+                      now=now, llm=llm, default_priority=default_priority, run_id=rid)
+    final = result["state"]
+
+    console.rule(f"[bold]AUTO run {rid}[/bold]")
+    console.print(f"共執行 [bold]{final.iteration_count}[/bold] 輪")
+    if result["paused"]:
+        console.print("[bold yellow]高風險硬停（PAUSED，可 resume）[/bold yellow]")
+        if result["ask"] is not None:
+            _print_pull_ask(rid, result["ask"])
+    else:
+        console.print(f"[bold]停止原因[/bold]（{result['reason_kind']}）：{result['stop_reason']}")
+        console.print("")
+        console.print("最終 readiness 分數：")
+        console.print(render.render_readiness(final))
 
 
 @app.command()
