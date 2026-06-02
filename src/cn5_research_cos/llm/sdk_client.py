@@ -202,6 +202,110 @@ def _retrying(fn, attempts: int, base_wait: float, max_wait: float):
     return _wrapped
 
 
+# --------------------------------------------------------------------------- #
+# Session pool (P2 acceleration wiring) — persistent sessions reused across calls
+# --------------------------------------------------------------------------- #
+# When a pool is installed via `use_session_pool`, the one-shot `call_structured`
+# / `call_structured_websearch` entry points transparently route through ONE
+# persistent ClaudeSession per (tools, schema) key — so the SAME brain called
+# once per iteration across N iterations pays the ~12s `claude` startup ONCE
+# instead of N times. The real brains therefore need NO change: they keep calling
+# `call_structured(...)`; the routing is decided here by the ambient pool.
+_ACTIVE_POOL: "SessionPool | None" = None
+
+
+def _schema_brain_label(schema: dict | None, tools: list[str] | None) -> str:
+    """Stable, deterministic label for a call (for metrics per-brain counts).
+
+    Keyed by the schema's top-level property names + whether tools are on, so
+    each distinct brain schema maps to a stable name without the brains passing
+    one explicitly.
+    """
+    if not schema:
+        return "text" if not tools else "text+tools"
+    keys = ",".join(sorted((schema.get("properties") or {}).keys()))
+    suffix = "+ws" if tools else ""
+    return (keys or "schema") + suffix
+
+
+class SessionPool:
+    """A run-scoped pool of persistent ClaudeSessions keyed by (tools, schema).
+
+    `ask(system, user, schema, allowed_tools, model)` opens a session on first
+    use of a key and reuses it thereafter. Sessions are torn down on `close()`
+    (called by the `use_session_pool` context manager on exit).
+    """
+
+    def __init__(self, *, metrics: Any = None, timeout_sec: int = 300,
+                 attempts: int = 5):
+        self._metrics = metrics
+        self._timeout = timeout_sec
+        self._attempts = attempts
+        self._sessions: dict[tuple, Any] = {}
+
+    @staticmethod
+    def _key(schema: dict | None, tools: list[str] | None, model: str) -> tuple:
+        import json as _json
+        tool_key = tuple(sorted(tools or []))
+        schema_key = _json.dumps(schema, sort_keys=True) if schema else ""
+        return (model, tool_key, schema_key)
+
+    def ask(self, system: str, user: str, schema: dict | None, *,
+            allowed_tools: list[str] | None, model: str | None,
+            max_turns: int) -> dict[str, Any]:
+        used_model = model or DEFAULT_MODEL
+        key = self._key(schema, allowed_tools, used_model)
+        sess = self._sessions.get(key)
+        if sess is None:
+            sess = ClaudeSession(
+                system=system, model=used_model, schema=schema,
+                allowed_tools=allowed_tools, timeout_sec=self._timeout,
+                max_attempts=self._attempts, max_turns=max_turns,
+                metrics=self._metrics,
+            )
+            sess.__enter__()
+            self._sessions[key] = sess
+        brain = _schema_brain_label(schema, allowed_tools)
+        return sess.ask(user, brain=brain)
+
+    def close(self) -> None:
+        for sess in self._sessions.values():
+            try:
+                sess.__exit__(None, None, None)
+            except Exception:
+                pass
+        self._sessions.clear()
+
+
+class _PoolContext:
+    def __init__(self, metrics: Any = None, timeout_sec: int = 300, attempts: int = 5):
+        self._pool = SessionPool(metrics=metrics, timeout_sec=timeout_sec, attempts=attempts)
+        self._prev: SessionPool | None = None
+
+    def __enter__(self) -> SessionPool:
+        global _ACTIVE_POOL
+        self._prev = _ACTIVE_POOL
+        _ACTIVE_POOL = self._pool
+        return self._pool
+
+    def __exit__(self, *exc) -> None:
+        global _ACTIVE_POOL
+        try:
+            self._pool.close()
+        finally:
+            _ACTIVE_POOL = self._prev
+
+
+def use_session_pool(*, metrics: Any = None, timeout_sec: int = 300,
+                     attempts: int = 5) -> _PoolContext:
+    """Install a run-scoped persistent-session pool for the duration of the
+    `with` block. Inside it, `call_structured` / `call_structured_websearch`
+    route through persistent sessions (one per schema+tools) instead of spawning
+    a fresh `claude` per call. Thread a `RunMetrics` to capture cost/latency.
+    """
+    return _PoolContext(metrics=metrics, timeout_sec=timeout_sec, attempts=attempts)
+
+
 def _call(
     *, system: str, user: str, schema: dict, model: str | None,
     timeout_sec: int, attempts: int,
@@ -214,8 +318,18 @@ def _call(
     OAuth login — an ANTHROPIC_API_KEY is NOT required. If auth genuinely fails,
     the SDK call below errors and is wrapped in LLMUnavailableError. Never
     fabricates a result.
+
+    When a session pool is active (P2 acceleration), the call is routed through a
+    persistent session for reuse; otherwise it uses the one-shot `query()` path.
     """
     used_model = model or DEFAULT_MODEL
+
+    if _ACTIVE_POOL is not None:
+        # Persistent-session path: the pool reuses one live `claude` across calls.
+        return _ACTIVE_POOL.ask(
+            system, user, schema, allowed_tools=allowed_tools,
+            model=used_model, max_turns=max_turns,
+        )
 
     def _once() -> dict[str, Any]:
         return asyncio.run(

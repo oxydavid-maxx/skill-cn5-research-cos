@@ -453,7 +453,25 @@ def run_loop(
     max_iterations: int = 8,
     now: str = "t",
     llm: str = "mock",
-) -> ResearchState:
+    metrics=None,
+    return_metrics: bool = False,
+):
+    """Run the convergence loop to completion.
+
+    For ``llm == "real"`` a run-scoped persistent ``ClaudeSession`` pool is opened
+    (P2 acceleration) so the real brains' repeated structured calls reuse one
+    `claude` per (schema, tools) instead of re-spawning per call; cost/latency is
+    accumulated into ``metrics`` (a fresh ``RunMetrics`` if none supplied).
+
+    Returns the final ``ResearchState``; if ``return_metrics`` is True, returns
+    ``(final_state, metrics)`` (back-compat: default returns the state alone).
+    """
+    from .llm import sdk_client
+    from .llm.metrics import RunMetrics
+
+    if metrics is None:
+        metrics = RunMetrics()
+
     app = compile_graph()
     init: GraphState = {
         "research_state": initial,
@@ -462,7 +480,18 @@ def run_loop(
         "max_iterations": max_iterations,
         "llm": llm,
     }
-    out = app.invoke(init, config={"recursion_limit": 100})
+
+    def _invoke():
+        return app.invoke(init, config={"recursion_limit": 100})
+
+    if llm == "real":
+        with sdk_client.use_session_pool(metrics=metrics):
+            out = _invoke()
+    else:
+        out = _invoke()
+
     final = out["research_state"]
     save_snapshot(final, base_dir=base_dir)
+    if return_metrics:
+        return final, metrics
     return final
