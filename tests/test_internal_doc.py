@@ -75,6 +75,19 @@ def test_tier1_consume_on_topic_match(monkeypatch):
     assert internal_doc.is_degraded(bundle) is False
 
 
+def test_paperwork_version_stamped_into_provenance(monkeypatch):
+    # When paperwork actually produces evidence, the resolved plugin version is
+    # stamped into the bundle (detectable in run metadata, per spec preflight).
+    home = Path(__file__).parent / "fixtures" / "paperwork-home"
+    monkeypatch.setattr(internal_doc, "find_paperwork_home", lambda **k: home)
+    rs = _state()
+    rs.available_sources = [str(SURVEY)]
+    iss = _issue(rs, "i2c-backward-compatibility")
+    bundle = InternalDocResearcher().research(rs, iss.id)
+    assert any("paperwork" in s.lower() and "9.9.9-test" in s
+               for s in bundle.suggested_followups)
+
+
 def test_tier1_skips_on_topic_mismatch(monkeypatch):
     # No PDFs available either -> non-matching topic falls through to a degrade-
     # shaped (gap-recording) bundle rather than fabricating from a survey whose

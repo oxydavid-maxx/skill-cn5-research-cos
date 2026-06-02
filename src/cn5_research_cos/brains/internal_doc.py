@@ -252,6 +252,17 @@ class InternalDocResearcher:
             coverage_gaps=coverage_gaps,
         )
 
+    # ---- provenance ------------------------------------------------------ #
+    @staticmethod
+    def _stamp_provenance(bundle: EvidenceBundle, home: Path) -> EvidenceBundle:
+        """Record the resolved paperwork plugin version into the bundle so the
+        version is captured in run metadata (spec preflight requirement)."""
+        version = paperwork_version(home) or "unknown"
+        note = f"provenance: paperwork v{version}"
+        if note not in bundle.suggested_followups:
+            bundle.suggested_followups.append(note)
+        return bundle
+
     # ---- orchestration --------------------------------------------------- #
     def _gather(self, state: ResearchState, issue_id: str,
                 pdfs: list[Path] | None) -> EvidenceBundle:
@@ -259,19 +270,21 @@ class InternalDocResearcher:
         home = find_paperwork_home()
         if home is None:
             return self._degraded_bundle(title, issue_id)
+        home = Path(home)
 
         # Tier 1: opportunistic consume of a topic-matching existing survey.
         tier1 = self._tier1_consume(state, issue_id, title, desc)
         if tier1 is not None:
-            return tier1
+            return self._stamp_provenance(tier1, home)
 
         # Tier 2: generate from raw PDFs (explicit arg, or brief intake).
         candidate_pdfs = list(pdfs or [])
         if not candidate_pdfs:
             candidate_pdfs = self._brief_pdfs(state)
         if candidate_pdfs:
-            return self._tier2_generate(
-                Path(home), state, issue_id, title, desc, candidate_pdfs
+            return self._stamp_provenance(
+                self._tier2_generate(home, state, issue_id, title, desc, candidate_pdfs),
+                home,
             )
 
         # Nothing internal applied (no matching survey, no PDFs): record the gap
