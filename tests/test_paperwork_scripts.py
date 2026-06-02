@@ -76,12 +76,15 @@ def test_extract_pages_returns_out_path(monkeypatch, tmp_path):
     assert "--out" in cmd and str(out_pdf) in cmd
 
 
-def test_pdf2md_default_backend_pymupdf4llm(monkeypatch, tmp_path):
+def test_pdf2md_default_backend_docling(monkeypatch, tmp_path):
+    # paperwork v7.0.1+ flipped backend_policy to docling-strict: docling is the
+    # ONLY valid backend for fragment-of-record output. Our default is now docling.
     captured = {}
     out_md = tmp_path / "frag.md"
 
     def fake_run(cmd, **kw):
         captured["cmd"] = cmd
+        captured["kw"] = kw
         out_md.write_text("# fragment", encoding="utf-8")
         return _FakeCompleted(returncode=0)
 
@@ -93,10 +96,16 @@ def test_pdf2md_default_backend_pymupdf4llm(monkeypatch, tmp_path):
     cmd = captured["cmd"]
     assert cmd[1].endswith(str(Path("scripts") / "pdf2md.py"))
     assert "--backend" in cmd
-    assert cmd[cmd.index("--backend") + 1] == "pymupdf4llm"
+    assert cmd[cmd.index("--backend") + 1] == "docling"
+    # docling is model-based (seconds-per-page): a generous explicit timeout must
+    # be passed so a slow-but-valid conversion is NOT silently killed/truncated.
+    assert captured["kw"].get("timeout") is not None
+    assert captured["kw"]["timeout"] >= 300
 
 
-def test_pdf2md_docling_backend(monkeypatch, tmp_path):
+def test_pdf2md_pymupdf4llm_backend_still_constructible(monkeypatch, tmp_path):
+    # The wrapper can still build a pymupdf4llm command (non-citable scratch only;
+    # tier-2 never uses it), but the backend must be passed explicitly.
     captured = {}
     out_md = tmp_path / "frag.md"
 
@@ -108,9 +117,9 @@ def test_pdf2md_docling_backend(monkeypatch, tmp_path):
     monkeypatch.setattr(subprocess, "run", fake_run)
     subset = tmp_path / "subset.pdf"
     subset.write_bytes(b"%PDF")
-    scripts.pdf2md(HOME, subset, out_md, backend="docling")
+    scripts.pdf2md(HOME, subset, out_md, backend="pymupdf4llm")
     cmd = captured["cmd"]
-    assert cmd[cmd.index("--backend") + 1] == "docling"
+    assert cmd[cmd.index("--backend") + 1] == "pymupdf4llm"
 
 
 def test_nonzero_exit_raises_typed_error(monkeypatch, tmp_path):
