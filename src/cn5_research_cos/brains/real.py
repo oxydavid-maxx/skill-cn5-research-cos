@@ -204,11 +204,13 @@ class RealResearcher:
                 _RESEARCH_SYSTEM, user, _RESEARCH_SCHEMA
             )
             return self._build_bundle(raw, title, issue_id)
-        async with pool.acquire(
-            system=_RESEARCH_SYSTEM, schema=_RESEARCH_SCHEMA,
+        # Route through the pool's retry-with-release so a transport/rate-limit
+        # error frees the permit before backing off (Task 3a) and never deadlocks.
+        raw = await pool.run_with_retry(
+            user, system=_RESEARCH_SYSTEM, schema=_RESEARCH_SCHEMA,
             allowed_tools=["WebSearch"], model=None, max_turns=4,
-        ) as sess:
-            raw = await sess.ask_async(user, schema=_RESEARCH_SCHEMA, brain="researcher+ws")
+            brain="researcher+ws",
+        )
         return self._build_bundle(raw, title, issue_id)
 
 

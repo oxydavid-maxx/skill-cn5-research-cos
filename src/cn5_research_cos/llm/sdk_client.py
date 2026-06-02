@@ -797,6 +797,46 @@ class AsyncSessionPool:
             except ValueError:
                 pass
 
+    async def run_with_retry(self, user: str, *, system: str, schema: dict | None,
+                             allowed_tools: list[str] | None, model: str | None,
+                             max_attempts: int = 5, backoff_base: float = 3.0,
+                             max_turns: int | None = None, brain: str = "unknown",
+                             on_event=None):
+        """Acquire -> ONE turn -> release; on a retryable transport error RELEASE
+        the permit (exit the acquire), back off OUTSIDE the permit, then
+        re-acquire and retry. Task 3(a): the semaphore is freed before the retry
+        waits, so a backing-off task does not hold a slot — and never deadlocks.
+
+        Each attempt runs a single-turn ``ask_async`` (``max_attempts=1`` on the
+        session) so retry/backoff lives HERE, between permit holds, not inside the
+        held session. The final failure propagates after the permit is released.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                async with self.acquire(
+                    system=system, schema=schema, allowed_tools=allowed_tools,
+                    model=model, max_turns=max_turns, max_attempts=1,
+                    backoff_base=0.0,
+                ) as sess:
+                    if on_event is not None:
+                        on_event(f"{user}-start")
+                    result = await sess.ask_async(user, schema=schema, brain=brain)
+                if on_event is not None:
+                    on_event(f"{user}-done")
+                return result
+            except Exception as exc:  # noqa: BLE001 - permit already released here
+                last_exc = exc
+                if attempt < max_attempts:
+                    wait = min(60.0, backoff_base * (2 ** (attempt - 1)))
+                    if wait > 0:
+                        # Backoff happens with NO permit held (we left the `with`).
+                        await asyncio.sleep(wait)
+                    continue
+                raise
+        # Unreachable (loop either returns or raises), but keep the type checker happy.
+        raise last_exc  # type: ignore[misc]
+
     async def aclose(self) -> None:
         """Disconnect every session the pool ever created."""
         for sess in list(self._all):

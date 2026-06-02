@@ -252,3 +252,60 @@ def test_pool_rate_limit_retry_no_deadlock(monkeypatch):
     assert len(results) == 4
     assert all(r == {"answer": "ok"} for r in results)
     assert CountingFake.max_live <= 2
+
+
+def test_pool_releases_permit_during_retry_backoff(monkeypatch):
+    """Task 3(a): on a transport error the permit is RELEASED before the retry
+    waits, so another waiting task can use the slot during the backoff.
+
+    Drive cap=1 with two tasks: task A's first turn fails and must back off; while
+    A backs off, task B (which would otherwise be blocked by the cap-1 permit)
+    must be able to acquire and finish. If the permit were held across A's
+    backoff, B could not start until A fully finished -> we detect release by
+    observing B starts before A's retry completes."""
+    _install(monkeypatch)
+    monkeypatch.setenv("CN5_COS_MAX_CONCURRENT", "1")
+
+    order: list[str] = []
+
+    # A fake whose FIRST served turn (task A) fails, forcing a backoff; B succeeds.
+    class _RetryFake(CountingFake):
+        served_global = 0
+
+        async def _gen(self):
+            type(self).served_global += 1
+            mine = type(self).served_global
+            if mine == 1:
+                # task A first attempt: fail to trigger backoff
+                raise RuntimeError("rate-limited (429)")
+            yield _Assistant([_ToolBlock({"answer": "ok"})])
+            yield _Result()
+
+    _RetryFake.served_global = 0
+    monkeypatch.setattr(sdk_client, "ClaudeSDKClient", _RetryFake)
+
+    async def _run():
+        pool = sdk_client.AsyncSessionPool(max_concurrent=1)
+        try:
+            def _hook(ev):
+                order.append(ev)
+
+            # A retries (its first turn fails -> backoff window); B is a plain task
+            # that must slip into the freed slot DURING A's backoff.
+            a = asyncio.create_task(pool.run_with_retry(
+                "A", system="sys", schema=_SCHEMA, allowed_tools=None, model=None,
+                max_attempts=3, backoff_base=0.15, brain="r", on_event=_hook))
+            await asyncio.sleep(0.02)  # let A take the permit, fail, start backing off
+            b = asyncio.create_task(pool.run_with_retry(
+                "B", system="sys", schema=_SCHEMA, allowed_tools=None, model=None,
+                max_attempts=1, backoff_base=0.0, brain="r", on_event=_hook))
+            return await asyncio.gather(a, b)
+        finally:
+            await pool.aclose()
+
+    results = asyncio.run(asyncio.wait_for(_run(), timeout=10))
+    assert all(r == {"answer": "ok"} for r in results)
+    # B must have STARTED before A finished its retry -> permit was freed during
+    # A's backoff (otherwise B-start would come only after A-done).
+    assert "B-start" in order
+    assert order.index("B-start") < order.index("A-done"), order

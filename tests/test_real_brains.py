@@ -142,8 +142,8 @@ def test_scorer_returns_readiness(monkeypatch):
 # RealResearcher async path (P2 accel increment 2)
 # --------------------------------------------------------------------------- #
 def test_researcher_async_uses_pool(monkeypatch):
-    """research_async acquires a session from the async pool and calls ask_async,
-    returning the same typed EvidenceBundle the sync path would."""
+    """research_async routes its WebSearch through the pool's run_with_retry (so
+    rate-limit retries release the permit), returning the same typed bundle."""
     import asyncio
 
     scripted = {
@@ -153,32 +153,13 @@ def test_researcher_async_uses_pool(monkeypatch):
         "missing_evidence": ["cost"], "coverage_gaps": ["internal"],
     }
 
-    class _FakeSession:
-        def __init__(self):
-            self.asks = []
-
-        async def ask_async(self, user, *, schema=None, brain="unknown"):
-            self.asks.append((user, brain, schema is not None))
-            return scripted
-
-    class _FakeAcq:
-        def __init__(self, sess):
-            self._sess = sess
-
-        async def __aenter__(self):
-            return self._sess
-
-        async def __aexit__(self, *exc):
-            return None
-
     class _FakePool:
         def __init__(self):
-            self.session = _FakeSession()
-            self.acquire_calls = []
+            self.calls = []
 
-        def acquire(self, **kw):
-            self.acquire_calls.append(kw)
-            return _FakeAcq(self.session)
+        async def run_with_retry(self, user, **kw):
+            self.calls.append(kw)
+            return scripted
 
     pool = _FakePool()
     state = _state()
@@ -188,11 +169,11 @@ def test_researcher_async_uses_pool(monkeypatch):
     assert bundle.issue_id == "I1"
     assert len(bundle.sources) == 1 and bundle.sources[0].id == "S-I1-0"
     assert bundle.claims and bundle.claims[0].source_refs == ["S-I1-0"]
-    # it actually went through the async pool session (not the sync path)
-    assert len(pool.acquire_calls) == 1
-    assert pool.session.asks and pool.session.asks[0][2] is True  # schema passed
+    # it actually went through the pool's retry-with-release path
+    assert len(pool.calls) == 1
+    assert pool.calls[0]["schema"] is not None
     # acquired WITH the WebSearch tool
-    assert pool.acquire_calls[0]["allowed_tools"] == ["WebSearch"]
+    assert pool.calls[0]["allowed_tools"] == ["WebSearch"]
 
 
 def test_researcher_async_falls_back_to_sync_without_pool(monkeypatch):
