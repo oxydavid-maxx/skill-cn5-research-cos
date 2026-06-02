@@ -72,5 +72,9 @@ class Brains:
     source_critic: SourceCritic
     compressor: Compressor
     skeptic: Skeptic
-    auditor: Auditor
+    auditor: Auditor          # Tier 1 sentinel — runs EVERY iteration.
     scorer: Scorer
+    # Tier 2 deep auditor — runs ONLY at a deterministic gate (before
+    # synthesize/terminal or a high-risk pull). P3: still the simulator/stub
+    # (real Albert FSM = P6). Defaults to None; build_brains wires a tiered one.
+    deep_auditor: Auditor | None = None

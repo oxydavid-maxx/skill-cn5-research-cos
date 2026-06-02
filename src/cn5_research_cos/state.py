@@ -25,3 +25,12 @@ class GraphState(TypedDict, total=False):
     now: str
     max_iterations: int
     llm: str
+    # P3 HITL: "interactive" (pause+exit on every pull gate) | "auto" (apply
+    # default on low-risk pulls, hard-stop/interrupt only on high-risk).
+    mode: str
+    # H6 final-review interrupt is opt-in (CLI cos run sets it); the P1 run_loop
+    # (no checkpointer) leaves it False so terminal stops don't pause.
+    enable_h6: bool
+    # Test-only: inject a ready-made Brains bundle (non-checkpointed path only,
+    # since a Brains dataclass is not JSON-serializable). Production never sets it.
+    brains: object
