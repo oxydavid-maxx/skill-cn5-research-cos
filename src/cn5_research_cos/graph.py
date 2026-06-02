@@ -12,6 +12,7 @@ all mutation happens in nodes.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
@@ -29,6 +30,78 @@ from .store import save_snapshot
 # Two-level caps + branch budget seed.
 DEFAULT_BREADTH = 4
 DEFAULT_DEPTH = 2
+
+# P2 acceleration: cap how many issues fan out to the (expensive) researcher per
+# iteration. Each researched issue is one WebSearch-bearing LLM call, so an
+# unbounded fan-out re-spawns N `claude` processes per round. Top-K-by-impact
+# keeps the highest-leverage work and lets the loop converge in fewer total
+# searches. Overridable via env for live tuning.
+DEFAULT_MAX_RESEARCH_PER_ITER = 3
+
+_ANSWERED_OR_BLOCKED = (
+    IssueStatus.answered,
+    IssueStatus.blocked_by_human,
+    IssueStatus.blocked_by_internal_data,
+    IssueStatus.blocked_by_permission,
+    IssueStatus.blocked_by_decision,
+)
+
+
+def _max_research_per_iter() -> int:
+    raw = os.environ.get("CN5_COS_MAX_RESEARCH_PER_ITER")
+    if raw:
+        try:
+            v = int(raw)
+            if v > 0:
+                return v
+        except ValueError:
+            pass
+    return DEFAULT_MAX_RESEARCH_PER_ITER
+
+
+def select_research_issues(state: ResearchState, brains, k: int | None = None) -> list[str]:
+    """Choose which issue ids to fan out to the researcher THIS iteration.
+
+    Wraps the brain bundle's raw `supervisor.select`, then enforces the P2
+    acceleration budget (pure / deterministic):
+
+    * skip ``answered`` and any ``blocked_*`` issue (never re-research a closed
+      or human-gated issue);
+    * dedup identical research queries within the run (the issue title is the
+      query key) against ``state.researched_queries`` — a query is researched at
+      most once per run;
+    * order the survivors by ``impact`` descending (stable) and take the top-K
+      (``k`` or env ``CN5_COS_MAX_RESEARCH_PER_ITER`` or the default 3).
+
+    Side effect: records the selected queries into ``state.researched_queries``
+    so a later iteration's identical issue is skipped.
+    """
+    cap = k if k is not None else _max_research_per_iter()
+    raw_ids = list(brains.supervisor.select(state))
+    seen = set(state.researched_queries)
+
+    candidates: list[tuple[int, str]] = []
+    for iid in raw_ids:
+        node = state.issue_map.get(iid)
+        if node is None:
+            continue
+        if node.status in _ANSWERED_OR_BLOCKED:
+            continue
+        query = node.title
+        if query in seen:
+            continue
+        candidates.append((node.impact, iid))
+
+    # Stable sort by impact descending (Python sort is stable, so ties keep the
+    # supervisor's original order).
+    candidates.sort(key=lambda t: t[0], reverse=True)
+    selected = [iid for _impact, iid in candidates[:cap]]
+
+    for iid in selected:
+        q = state.issue_map[iid].title
+        if q not in state.researched_queries:
+            state.researched_queries.append(q)
+    return selected
 
 
 # --------------------------------------------------------------------------- #
@@ -85,7 +158,7 @@ def node_supervisor(state: GraphState) -> GraphState:
 
 def _fanout_payload(state: GraphState):
     rs = state["research_state"]
-    selected = _brains(state).supervisor.select(rs)
+    selected = select_research_issues(rs, _brains(state))
     now = state.get("now", "t")
     llm = state.get("llm", "mock")
     return [
