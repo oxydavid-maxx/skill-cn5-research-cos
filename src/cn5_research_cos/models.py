@@ -234,6 +234,11 @@ class ResearchState(BaseModel):
     iteration_count: int = 0
     last_audit: AuditResult | None = None
 
+    # research dedup seen-set: research-query strings (issue titles) already
+    # dispatched this run, so the supervisor never re-researches the same query
+    # (P2 acceleration). A list (not set) for JSON round-trip; order-insensitive.
+    researched_queries: list[str] = Field(default_factory=list)
+
     # output
     final_memo: str | None = None
     created_at: str | None = None

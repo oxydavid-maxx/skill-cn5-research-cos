@@ -93,7 +93,13 @@ def run(
             "llm": llm,
         }
 
-    try:
+    from .llm import sdk_client
+    from .llm.metrics import RunMetrics
+
+    metrics = RunMetrics()
+
+    def _stream() -> None:
+        nonlocal final_state, last_decision, last_printed_iter
         for chunk in app_graph.stream(stream_input, config=cfg, stream_mode="values"):
             rs = chunk.get("research_state")
             if rs is None:
@@ -106,6 +112,16 @@ def run(
                 console.print(render.iteration_summary(rs))
                 console.print("")
                 last_printed_iter = rs.iteration_count
+
+    try:
+        # P2 acceleration: for a real run, open ONE persistent ClaudeSession pool
+        # so the cheap-LLM brains reuse a `claude` across calls (pay ~12s startup
+        # once, not per call) and accumulate cost/latency into `metrics`.
+        if llm == "real":
+            with sdk_client.use_session_pool(metrics=metrics):
+                _stream()
+        else:
+            _stream()
     finally:
         conn.close()
 
@@ -120,6 +136,10 @@ def run(
     console.print("")
     console.print("最終 readiness 分數：")
     console.print(render.render_readiness(final_state))
+    # P2 acceleration: one-line cost/latency/calls summary (real runs accumulate
+    # real $ + wall-clock; a mock run prints zeros, which is also useful signal).
+    console.print("")
+    console.print(f"[dim]{metrics.summary_line()}[/dim]")
 
 
 @app.command()

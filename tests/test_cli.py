@@ -21,6 +21,8 @@ def test_run_prints_summary_and_scores(tmp_path):
     # Chinese iteration summary headers + readiness scores present
     assert "Albert" in r.output
     assert "readiness" in r.output.lower() or "就緒" in r.output or "分數" in r.output
+    # P2 acceleration: a cost/latency/calls summary line is always printed
+    assert "cost=$" in r.output and "latency=" in r.output and "calls=" in r.output
     assert (tmp_path / "run1" / "state.json").exists()
 
 

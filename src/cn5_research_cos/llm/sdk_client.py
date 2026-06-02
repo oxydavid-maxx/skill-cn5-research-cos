@@ -24,6 +24,18 @@ Design contract (verified against escape-mrc's working client):
 - Key-gated: `has_api_key()` lets callers skip live tests cleanly without a key.
 
 Cheap model by default (Haiku-tier) per the P2a fork decision F5.
+
+Prompt caching (P2 acceleration Task 4): the installed claude-agent-sdk (0.1.63)
+exposes `ClaudeAgentOptions.system_prompt` as `str | SystemPromptPreset |
+SystemPromptFile | None` — there is NO structured content-block array on which an
+explicit Anthropic `cache_control:{type:ephemeral}` marker can be attached (that
+is a raw Messages-API construct the SDK hides behind the `claude` CLI). The CLI
+caches the system prompt automatically; the application's only obligation for a
+cache-hit is to keep each brain's large static system prompt BYTE-IDENTICAL
+across calls. We satisfy that by keeping every brain system prompt a module-level
+constant (see brains/real.py + albert/simulator.py) — never rebuilt per call —
+and lock it with tests/test_prompt_caching.py. So explicit cache_control is not
+applicable to this SDK shape; byte-identical constants are how caching is applied.
 """
 from __future__ import annotations
 
@@ -74,6 +86,27 @@ _SDK_ENV: dict[str, str] = {
 }
 
 
+# Module-level handles for the SDK client/options classes. They are bound lazily
+# (on first session use) from claude_agent_sdk so importing this module never
+# requires the SDK installed, AND so deterministic tests can monkeypatch
+# `sdk_client.ClaudeSDKClient` with a fake. None until first `_load_sdk()`.
+ClaudeSDKClient: Any = None
+ClaudeAgentOptions: Any = None
+
+
+def _load_sdk() -> None:
+    """Bind ClaudeSDKClient / ClaudeAgentOptions from the SDK if not already set
+    (a test monkeypatch sets them first, so we never clobber a fake)."""
+    global ClaudeSDKClient, ClaudeAgentOptions
+    if ClaudeSDKClient is None or ClaudeAgentOptions is None:
+        from claude_agent_sdk import ClaudeAgentOptions as _O
+        from claude_agent_sdk import ClaudeSDKClient as _C
+        if ClaudeSDKClient is None:
+            ClaudeSDKClient = _C
+        if ClaudeAgentOptions is None:
+            ClaudeAgentOptions = _O
+
+
 class LLMUnavailableError(RuntimeError):
     """Raised when the SDK cannot produce structured output (no key / transport)."""
 
@@ -90,10 +123,16 @@ def has_api_key() -> bool:
 
 
 async def _collect(msg_iter) -> dict[str, Any]:
-    """Aggregate an SDK async message iterator into {text, structured, is_error}."""
+    """Aggregate an SDK async message iterator into a result dict.
+
+    Keys: text, structured, is_error, and — for cost/latency instrumentation —
+    cost_usd (ResultMessage.total_cost_usd) + usage (ResultMessage.usage).
+    """
     text_parts: list[str] = []
     structured: dict | None = None
     is_error = False
+    cost_usd: float | None = None
+    usage: dict = {}
     async for msg in msg_iter:
         content = getattr(msg, "content", None)
         if isinstance(content, list):
@@ -105,7 +144,19 @@ async def _collect(msg_iter) -> dict[str, Any]:
                     structured = getattr(block, "input", None)
         if hasattr(msg, "is_error"):
             is_error = bool(getattr(msg, "is_error", False))
-    return {"text": "\n".join(text_parts), "structured": structured, "is_error": is_error}
+        c = getattr(msg, "total_cost_usd", None)
+        if c is not None:
+            cost_usd = float(c)
+        u = getattr(msg, "usage", None)
+        if isinstance(u, dict) and u:
+            usage = u
+    return {
+        "text": "\n".join(text_parts),
+        "structured": structured,
+        "is_error": is_error,
+        "cost_usd": cost_usd,
+        "usage": usage,
+    }
 
 
 async def _query_structured(
@@ -151,6 +202,110 @@ def _retrying(fn, attempts: int, base_wait: float, max_wait: float):
     return _wrapped
 
 
+# --------------------------------------------------------------------------- #
+# Session pool (P2 acceleration wiring) — persistent sessions reused across calls
+# --------------------------------------------------------------------------- #
+# When a pool is installed via `use_session_pool`, the one-shot `call_structured`
+# / `call_structured_websearch` entry points transparently route through ONE
+# persistent ClaudeSession per (tools, schema) key — so the SAME brain called
+# once per iteration across N iterations pays the ~12s `claude` startup ONCE
+# instead of N times. The real brains therefore need NO change: they keep calling
+# `call_structured(...)`; the routing is decided here by the ambient pool.
+_ACTIVE_POOL: "SessionPool | None" = None
+
+
+def _schema_brain_label(schema: dict | None, tools: list[str] | None) -> str:
+    """Stable, deterministic label for a call (for metrics per-brain counts).
+
+    Keyed by the schema's top-level property names + whether tools are on, so
+    each distinct brain schema maps to a stable name without the brains passing
+    one explicitly.
+    """
+    if not schema:
+        return "text" if not tools else "text+tools"
+    keys = ",".join(sorted((schema.get("properties") or {}).keys()))
+    suffix = "+ws" if tools else ""
+    return (keys or "schema") + suffix
+
+
+class SessionPool:
+    """A run-scoped pool of persistent ClaudeSessions keyed by (tools, schema).
+
+    `ask(system, user, schema, allowed_tools, model)` opens a session on first
+    use of a key and reuses it thereafter. Sessions are torn down on `close()`
+    (called by the `use_session_pool` context manager on exit).
+    """
+
+    def __init__(self, *, metrics: Any = None, timeout_sec: int = 300,
+                 attempts: int = 5):
+        self._metrics = metrics
+        self._timeout = timeout_sec
+        self._attempts = attempts
+        self._sessions: dict[tuple, Any] = {}
+
+    @staticmethod
+    def _key(schema: dict | None, tools: list[str] | None, model: str) -> tuple:
+        import json as _json
+        tool_key = tuple(sorted(tools or []))
+        schema_key = _json.dumps(schema, sort_keys=True) if schema else ""
+        return (model, tool_key, schema_key)
+
+    def ask(self, system: str, user: str, schema: dict | None, *,
+            allowed_tools: list[str] | None, model: str | None,
+            max_turns: int) -> dict[str, Any]:
+        used_model = model or DEFAULT_MODEL
+        key = self._key(schema, allowed_tools, used_model)
+        sess = self._sessions.get(key)
+        if sess is None:
+            sess = ClaudeSession(
+                system=system, model=used_model, schema=schema,
+                allowed_tools=allowed_tools, timeout_sec=self._timeout,
+                max_attempts=self._attempts, max_turns=max_turns,
+                metrics=self._metrics,
+            )
+            sess.__enter__()
+            self._sessions[key] = sess
+        brain = _schema_brain_label(schema, allowed_tools)
+        return sess.ask(user, brain=brain)
+
+    def close(self) -> None:
+        for sess in self._sessions.values():
+            try:
+                sess.__exit__(None, None, None)
+            except Exception:
+                pass
+        self._sessions.clear()
+
+
+class _PoolContext:
+    def __init__(self, metrics: Any = None, timeout_sec: int = 300, attempts: int = 5):
+        self._pool = SessionPool(metrics=metrics, timeout_sec=timeout_sec, attempts=attempts)
+        self._prev: SessionPool | None = None
+
+    def __enter__(self) -> SessionPool:
+        global _ACTIVE_POOL
+        self._prev = _ACTIVE_POOL
+        _ACTIVE_POOL = self._pool
+        return self._pool
+
+    def __exit__(self, *exc) -> None:
+        global _ACTIVE_POOL
+        try:
+            self._pool.close()
+        finally:
+            _ACTIVE_POOL = self._prev
+
+
+def use_session_pool(*, metrics: Any = None, timeout_sec: int = 300,
+                     attempts: int = 5) -> _PoolContext:
+    """Install a run-scoped persistent-session pool for the duration of the
+    `with` block. Inside it, `call_structured` / `call_structured_websearch`
+    route through persistent sessions (one per schema+tools) instead of spawning
+    a fresh `claude` per call. Thread a `RunMetrics` to capture cost/latency.
+    """
+    return _PoolContext(metrics=metrics, timeout_sec=timeout_sec, attempts=attempts)
+
+
 def _call(
     *, system: str, user: str, schema: dict, model: str | None,
     timeout_sec: int, attempts: int,
@@ -163,8 +318,18 @@ def _call(
     OAuth login — an ANTHROPIC_API_KEY is NOT required. If auth genuinely fails,
     the SDK call below errors and is wrapped in LLMUnavailableError. Never
     fabricates a result.
+
+    When a session pool is active (P2 acceleration), the call is routed through a
+    persistent session for reuse; otherwise it uses the one-shot `query()` path.
     """
     used_model = model or DEFAULT_MODEL
+
+    if _ACTIVE_POOL is not None:
+        # Persistent-session path: the pool reuses one live `claude` across calls.
+        return _ACTIVE_POOL.ask(
+            system, user, schema, allowed_tools=allowed_tools,
+            model=used_model, max_turns=max_turns,
+        )
 
     def _once() -> dict[str, Any]:
         return asyncio.run(
@@ -245,3 +410,189 @@ def call_structured_websearch(
         timeout_sec=timeout_sec, attempts=attempts,
         allowed_tools=["WebSearch"], max_turns=max_turns,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Persistent session (P2 acceleration) — port of escape-mrc's ClaudeSession
+# --------------------------------------------------------------------------- #
+async def _session_turn(client, user: str, timeout_sec: int) -> dict[str, Any]:
+    """Run ONE turn on an already-connected ClaudeSDKClient and aggregate it."""
+    async def _run():
+        await client.query(user)
+        return await _collect(client.receive_response())
+
+    return await asyncio.wait_for(_run(), timeout=timeout_sec)
+
+
+class ClaudeSession:
+    """Persistent ``ClaudeSDKClient``: connect ONE `claude` subprocess, run many
+    turns. (Mirrors skill-ai-escape-mrc's ClaudeSession, adapted to our P2a
+    isolation args + `_collect` + cost/latency metrics.)
+
+    Root cause this solves: the one-shot ``query()`` transport spawns a fresh
+    `claude` CLI per call, paying ~12s session-startup EVERY call. Our brains
+    issue several structured calls per loop iteration, so per-call spawn
+    dominates wall-clock. Routing them through ONE persistent session pays
+    startup once and cuts spawns.
+
+    Same isolation as the one-shot path: ``setting_sources=None``,
+    ``mcp_servers={}`` + ``extra_args={"strict-mcp-config": None}`` (so a nested
+    run does not inherit ambient MCP tool schemas), ``env=_SDK_ENV``, and the
+    Windows no-console anyio patch (applied at import).
+
+    Usage::
+
+        with ClaudeSession(system=SYS, schema=SCHEMA) as s:
+            r1 = s.ask(user1, brain="expander")   # pays startup
+            r2 = s.ask(user2, brain="scorer")     # reuses the live client
+
+    ``ask()`` returns the schema dict (from the StructuredOutput tool block) when
+    a schema was given, else the text string. On a transport error it reconnects
+    a dead session and retries (up to ``max_attempts``); it raises
+    ``LLMUnavailableError`` rather than fabricating when no structured output is
+    produced. Threads an optional ``RunMetrics`` for cost/latency.
+    """
+
+    def __init__(
+        self,
+        *,
+        system: str,
+        model: str | None = None,
+        schema: dict | None = None,
+        allowed_tools: list[str] | None = None,
+        timeout_sec: int = 300,
+        max_attempts: int = 5,
+        max_turns: int | None = None,
+        metrics: Any = None,
+        backoff_base: float = 3.0,
+    ) -> None:
+        self._system = system.rstrip()
+        self._model = model or DEFAULT_MODEL
+        self._schema = schema
+        self._allowed_tools = list(allowed_tools or [])
+        self._timeout = timeout_sec
+        self._max_attempts = max_attempts
+        # Default turn budget: a schema needs a tool_use + tool_result cycle;
+        # WebSearch needs a few more. Matches the one-shot path's defaults.
+        if max_turns is not None:
+            self._max_turns = max_turns
+        elif self._allowed_tools:
+            self._max_turns = 4
+        else:
+            self._max_turns = 3
+        self._metrics = metrics
+        self._backoff_base = backoff_base
+        self._loop: Any = None
+        self._client: Any = None
+
+    def _build_options(self):
+        _load_sdk()
+        return ClaudeAgentOptions(
+            system_prompt=self._system,
+            setting_sources=None,
+            allowed_tools=list(self._allowed_tools),
+            max_turns=self._max_turns,
+            env=dict(_SDK_ENV),
+            model=self._model,
+            output_format=(
+                {"type": "json_schema", "schema": self._schema}
+                if self._schema is not None else None
+            ),
+            mcp_servers={},
+            extra_args={"strict-mcp-config": None},
+        )
+
+    def _connect(self) -> None:
+        _load_sdk()
+        self._client = ClaudeSDKClient(options=self._build_options())
+        self._loop.run_until_complete(self._client.connect())
+
+    def _disconnect(self) -> None:
+        if self._client is not None:
+            try:
+                self._loop.run_until_complete(self._client.disconnect())
+            except Exception:
+                pass
+            self._client = None
+
+    def __enter__(self) -> "ClaudeSession":
+        self._loop = asyncio.new_event_loop()
+        try:
+            self._connect()
+        except Exception as e:  # noqa: BLE001
+            try:
+                self._loop.close()
+            except Exception:
+                pass
+            self._loop = None
+            raise LLMUnavailableError(
+                f"ClaudeSession connect failed: {type(e).__name__}: {e}"
+            ) from e
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._disconnect()
+        try:
+            if self._loop is not None:
+                self._loop.close()
+        except Exception:
+            pass
+        self._loop = None
+
+    def ask(self, user: str, *, schema: dict | None = None, brain: str = "unknown"):
+        """Run one turn on the live client. ``schema`` overrides the session's
+        default schema for this turn (used when one session serves brains with
+        different schemas). Returns the structured dict (or text when no schema).
+        """
+        import time as _time
+
+        effective_schema = schema if schema is not None else self._schema
+        last_exc: Exception | None = None
+        for attempt in range(1, self._max_attempts + 1):
+            t0 = _time.monotonic()
+            try:
+                result = self._loop.run_until_complete(
+                    _session_turn(self._client, user, self._timeout)
+                )
+            except Exception as exc:  # noqa: BLE001 - transport/process error
+                last_exc = exc
+                if attempt < self._max_attempts:
+                    wait = min(60.0, self._backoff_base * (2 ** (attempt - 1)))
+                    if wait > 0:
+                        _time.sleep(wait)
+                    # reconnect a (possibly dead) session before retrying
+                    self._disconnect()
+                    try:
+                        self._connect()
+                    except Exception:
+                        pass
+                continue
+
+            wall = _time.monotonic() - t0
+            if self._metrics is not None:
+                self._metrics.record(
+                    cost_usd=result.get("cost_usd"), wall_s=wall,
+                    brain=brain, usage=result.get("usage"),
+                )
+
+            if effective_schema is not None:
+                structured = result.get("structured")
+                if structured is None:
+                    raise LLMUnavailableError(
+                        f"SDK session turn returned no structured output "
+                        f"(is_error={result.get('is_error')}, "
+                        f"text_len={len(result.get('text', ''))})"
+                    )
+                return structured
+            text = result.get("text", "")
+            if not text:
+                raise LLMUnavailableError(
+                    f"SDK session turn returned empty text (brain={brain})"
+                )
+            return text
+
+        raise LLMUnavailableError(
+            f"SDK session turn failed after {self._max_attempts} attempts "
+            f"(brain={brain}): {type(last_exc).__name__ if last_exc else 'unknown'}: "
+            f"{last_exc}"
+        )
