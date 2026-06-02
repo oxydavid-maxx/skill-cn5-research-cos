@@ -24,6 +24,18 @@ Design contract (verified against escape-mrc's working client):
 - Key-gated: `has_api_key()` lets callers skip live tests cleanly without a key.
 
 Cheap model by default (Haiku-tier) per the P2a fork decision F5.
+
+Prompt caching (P2 acceleration Task 4): the installed claude-agent-sdk (0.1.63)
+exposes `ClaudeAgentOptions.system_prompt` as `str | SystemPromptPreset |
+SystemPromptFile | None` — there is NO structured content-block array on which an
+explicit Anthropic `cache_control:{type:ephemeral}` marker can be attached (that
+is a raw Messages-API construct the SDK hides behind the `claude` CLI). The CLI
+caches the system prompt automatically; the application's only obligation for a
+cache-hit is to keep each brain's large static system prompt BYTE-IDENTICAL
+across calls. We satisfy that by keeping every brain system prompt a module-level
+constant (see brains/real.py + albert/simulator.py) — never rebuilt per call —
+and lock it with tests/test_prompt_caching.py. So explicit cache_control is not
+applicable to this SDK shape; byte-identical constants are how caching is applied.
 """
 from __future__ import annotations
 
