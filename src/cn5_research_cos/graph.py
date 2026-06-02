@@ -122,7 +122,16 @@ def _brains(state: GraphState | None = None):
     The bundle is selected by GraphState['llm'] ('mock' default keeps the P1
     deterministic loop unchanged; 'real' injects the P2b cheap-LLM brains). The
     graph topology + all loop/COS control are IDENTICAL for both.
+
+    A test may inject a ready-made ``Brains`` bundle via GraphState['brains'] (e.g.
+    a counting-fake deep_auditor for the audit-gating test). This is only honored
+    on the non-checkpointed ``compile_graph()`` path (a Brains dataclass is not
+    JSON-serializable for the SqliteSaver); the production CLI never sets it.
     """
+    if isinstance(state, dict):
+        injected = state.get("brains")
+        if injected is not None:
+            return injected
     llm = (state or {}).get("llm", "mock") if isinstance(state, dict) else "mock"
     return build_brains(llm or "mock")
 

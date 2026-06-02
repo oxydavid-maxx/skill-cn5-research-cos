@@ -31,3 +31,6 @@ class GraphState(TypedDict, total=False):
     # H6 final-review interrupt is opt-in (CLI cos run sets it); the P1 run_loop
     # (no checkpointer) leaves it False so terminal stops don't pause.
     enable_h6: bool
+    # Test-only: inject a ready-made Brains bundle (non-checkpointed path only,
+    # since a Brains dataclass is not JSON-serializable). Production never sets it.
+    brains: object
