@@ -23,6 +23,13 @@
 - **medium** (restricted doc / internal data / source conflict) → H3 HumanTask + continue adjacent.
 - **hard** (criterion unknown & all paths depend / all evidence needs internal data) → H5 call-help → interrupt (even in auto).
 
+## Audit tiering (2-tier now; pluggable; full model-cascade DEFERRED to P6)
+Decided 2026-06-02 — do NOT over-build a 3-tier Sonnet→Opus→Albert cascade now (over-engineered + premature; the only *qualitative* gap is one-shot-LLM-audit vs the real Albert FSM, and the real Albert is P6).
+- **Tier 1 sentinel — cheap LLM (haiku, the P2b simulator), EVERY iteration.** Fast challenges + drift/premature signals. (Evidence: the P2b live benchmark showed haiku's audit is already sharp — don't pay for a stronger sentinel on speculation; validate first.)
+- **Tier 2 deeper audit — only at a deterministic GATE** (before `synthesize`/`terminal`; before a high-risk human gate). In P3 the "deeper" audit is STILL the simulator (real Albert = P6); P3 builds the GATE placement (the expensive audit runs only where the cost matters), not a third model tier.
+- **`Auditor` becomes tier-pluggable + model-configurable** (e.g. `build_auditor(tier, model)`): so Sonnet/Opus/real-Albert tiers can be swapped in later by CONFIG, not a rewrite.
+- **Full model-cascade (escalation judged by a model) is DEFERRED to P6**, decided BY EVIDENCE (does the cheap tier miss what the real Albert catches?), and the escalation judge should favour cheap signals / deterministic rules over using the most-expensive model as gatekeeper.
+
 ## CLI
 - `cos run --question ... [--run-id]` — interactive: runs until a gate `interrupt()`s; prints the ask + exits with the run paused.
 - `cos resume <run_id> --answer "..."` (or `--choice A`) — `Command(resume=...)` continues from the checkpoint.
