@@ -716,36 +716,34 @@ def _build_and_gate_memo(state: GraphState, rs: ResearchState) -> None:
     _notify_needs_supplement(state, rs, memo)
 
 
-# Keys already notified this run live in steering_events under this kind, so a
-# later iteration with the same unverified-critical item does not re-email.
+# A supplement-notify marker in steering_events means this run has ALREADY emailed
+# the user once. We email AT MOST ONCE PER RUN — never per-iteration: a hard topic
+# full of unverifiable specs produces new unverified-critical items every iteration,
+# which would otherwise flood the inbox (observed 2026-06-03 on the switch-PK dogfood).
 _NOTIFY_EVENT_KIND = "notify-supplement"
 
 
-def _already_notified(rs: ResearchState) -> set[str]:
-    seen: set[str] = set()
-    for e in rs.steering_events:
-        if e.get("kind") == _NOTIFY_EVENT_KIND:
-            seen.update(e.get("items", []))
-    return seen
+def _supplement_email_sent(rs: ResearchState) -> bool:
+    return any(e.get("kind") == _NOTIFY_EVENT_KIND for e in rs.steering_events)
 
 
 def _notify_needs_supplement(state: GraphState, rs: ResearchState, memo) -> None:
-    """Email the user about NEW unverified-critical (needs-supplement) items, once
-    each. Fail-soft (the notifier never raises); the loop always continues."""
+    """Email the user AT MOST ONCE PER RUN about unverified-critical (needs-supplement)
+    items — a single consolidated heads-up, NOT one email per iteration. The full,
+    growing list lives in the HumanTasks (`cos show <run_id>`) and the §22 memo's
+    Required-Human-Decisions / What-We-Cannot-Say sections. Fail-soft (the notifier
+    never raises); the loop always continues."""
     items_text = list(getattr(memo, "needs_supplement", []) or [])
     if not items_text:
         return
-    already = _already_notified(rs)
-    new_text = [t for t in items_text if t not in already]
-    if not new_text:
-        return
-    # Resolve the corresponding HumanTasks (created by route_citations) to send.
-    tasks = [t for t in rs.human_tasks.values() if t.requested_input in new_text]
+    if _supplement_email_sent(rs):
+        return  # already emailed once this run — do NOT re-flood the inbox
+    tasks = [t for t in rs.human_tasks.values() if t.requested_input in items_text]
     if not tasks:
         return
     base_dir = state.get("base_dir", "runs") if isinstance(state, dict) else "runs"
     notify_supplement_needed(rs.run_id, tasks, base_dir=str(base_dir))
-    rs.steering_events.append({"kind": _NOTIFY_EVENT_KIND, "items": new_text})
+    rs.steering_events.append({"kind": _NOTIFY_EVENT_KIND, "items": items_text})
 
 
 def node_human_review(state: GraphState) -> GraphState:

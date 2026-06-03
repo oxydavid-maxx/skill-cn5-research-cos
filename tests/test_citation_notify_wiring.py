@@ -74,6 +74,33 @@ def test_notify_idempotent_across_iterations(monkeypatch):
     assert len(calls) == 1
 
 
+def test_notify_at_most_once_even_with_NEW_items_each_iteration(monkeypatch):
+    """Regression for the 2026-06-03 inbox-flood: on a hard topic every iteration
+    produces NEW unverified-critical items. The OLD per-new-item logic emailed each
+    iteration (flood). We email AT MOST ONCE PER RUN regardless of new items."""
+    calls = []
+    monkeypatch.setattr(graph, "notify_supplement_needed",
+                        lambda run_id, items, **kw: calls.append((run_id, list(items))) or True)
+    rs = _critical_state()
+    state = {"research_state": rs, "llm": "mock", "explicit_emit": False,
+             "base_dir": "runs"}
+
+    graph._build_and_gate_memo(state, rs)            # iteration 1 → emails once
+
+    # iteration 2 introduces a genuinely NEW decision-critical unverified claim
+    # (different text) — the OLD code would email it; the fix must NOT.
+    src2 = Source(id="S-crit2", title="src2", url="http://z", origin="web",
+                  excerpt="Again unrelated text about gardening.")
+    claim2 = Claim(claim="a SECOND decision-critical unverified claim",
+                   source_refs=["S-crit2"], confidence=5,
+                   notes="another quote absent from its source")
+    rs.evidence.append(EvidenceBundle(query="q", issue_id="I-2",
+                                      claims=[claim2], sources=[src2]))
+    graph._build_and_gate_memo(state, rs)            # iteration 2 → must NOT re-email
+
+    assert len(calls) == 1, f"flood: emailed {len(calls)} times (must be at most 1/run)"
+
+
 def test_no_notify_when_nothing_to_supplement(monkeypatch):
     calls = []
     monkeypatch.setattr(graph, "notify_supplement_needed",
