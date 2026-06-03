@@ -2,6 +2,15 @@
 
 > 2026-06-03. Boundary confirmed with user: P7 = everything after the real-Albert swap — async-supplement v2, the flash sentinel, hardening, performance, packaging, docs/monitoring. Builds on P6 (real Albert live). DoD: ship-ready — the cockpit survives real overnight runs, a colleague can use it end-to-end (incl. async document supplement by email reply), and the packaging question is resolved.
 
+> **STATUS 2026-06-03 (what's already DONE — so the remaining P7 list is clear):**
+> - **flash sentinel** → DONE (P6: `--flash` exists in Albert + `decision/audit_tier.py` cascade).
+> - **real-Albert crash + `--albert real` downgrade** → FIXED (`fix(D)` 5433572: GraphState declares `albert`; `contract._risk_node` guards string-risk).
+> - **Hard run cap (cost + wall)** → DONE (`feat(C)` c0c8621: `decision/run_cap.py` `cap_exceeded`; env `CN5_COS_MAX_COST_USD`/`CN5_COS_MAX_WALL_S`; hard-stops + emits current findings). (This was the "max-run / don't-blow-up" item.)
+> - **Per-topic reference store (AI sources + steer answers as notes; recursive scan)** → DONE (`feat(B)` e4e74ff: `brains/reference_store.py`).
+> - **Findings-first deliverable** → DONE (`feat(A)` c3a2a8d: synthesizer + memo lead with cited findings).
+>
+> **REMAINING in P7:** (1) async-supplement v2 (email-reply + attachment auto-ingest, below), (2) hardening — `--resume` robustness + error-recovery + anti-premature/anti-endless stress on real long runs, (3) performance — PostgresSaver if SqliteSaver bottlenecks + cross-run caching (evidence-gated), (4) packaging O-3 (installed Claude Code skill?), (5) docs/monitoring + reference-monitoring (re-audit when a cited source changes).
+
 ## Components
 
 ### 1. Async-supplement v2 — email reply + attachment auto-ingest (deferred from P5c)
