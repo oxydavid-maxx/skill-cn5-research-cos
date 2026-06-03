@@ -630,16 +630,37 @@ def _route_after_deep_audit(state: GraphState) -> str:
     return "human_review"
 
 
+def _build_and_gate_memo(state: GraphState, rs: ResearchState) -> None:
+    """P5: assemble the §22 decision-memo (LLM synthesis prose + deterministic
+    structure + wired-in P4b citation), run the four emission gates, and store the
+    rendered memo onto ``rs.final_memo``. A refused memo is stored too (with its
+    refusal banner) so the human sees WHY it did not emit. No-op if no synthesizer
+    is wired (older brain bundles)."""
+    from .synthesis.gates import check_emission
+    from .synthesis.memo import assemble_memo, render_memo
+    brains = _brains(state)
+    synth = getattr(brains, "synthesizer", None)
+    if synth is None:
+        return
+    memo = assemble_memo(rs, synth)
+    explicit = bool(state.get("explicit_emit", False))
+    check_emission(rs, memo, explicit=explicit)
+    rs.final_memo = render_memo(memo)
+
+
 def node_human_review(state: GraphState) -> GraphState:
     """H6 final-review seam: ``interrupt`` before synthesize/terminal.
 
-    The memo body is P5; here H6 is the wired interrupt point (confirm/revise).
-    AUTO mode does NOT pause here unless a high-risk audit demands it — an
-    overnight auto run is allowed to reach a terminal stop and report; the human
-    reviews the produced state afterwards. INTERACTIVE pauses for a confirm.
+    P5: this is where the §22 decision-memo is assembled + gated (the four emission
+    gates) before the human confirm/revise interrupt. AUTO mode does NOT pause here
+    unless a high-risk audit demands it — an overnight auto run is allowed to reach
+    a terminal stop and report; the human reviews the produced state afterwards.
+    INTERACTIVE pauses for a confirm.
     """
     rs = state["research_state"]
     mode = state.get("mode", rs.mode or "interactive")
+    # P5: build + gate the memo at the terminal seam (before the H6 interrupt).
+    _build_and_gate_memo(state, rs)
     # H6 interrupt is opt-in (``enable_h6``): the P1 ``run_loop`` (no checkpointer)
     # must reach a terminal stop without pausing, so the default is pass-through.
     # The CLI ``cos run`` (interactive, checkpointed) opts in.

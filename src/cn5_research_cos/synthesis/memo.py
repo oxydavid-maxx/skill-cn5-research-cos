@@ -135,3 +135,13 @@ def assemble_memo(state: ResearchState, synthesizer) -> Memo:
     unverified_key = citation_pass(state)
     return Memo(sections=sections, blockers=blockers,
                 unverified_key_claims=unverified_key)
+
+
+def render_memo(memo: Memo) -> str:
+    """Render the §22 memo to a Markdown string (the stored ``final_memo``)."""
+    lines = ["# §22 Decision Memo"]
+    if not memo.emitted and memo.refused_reason:
+        lines.append(f"\n> ⚠ NOT EMITTED — {memo.refused_reason}\n")
+    for s in memo.sections:
+        lines.append(f"\n## {s.title}\n\n{s.body}")
+    return "\n".join(lines)
