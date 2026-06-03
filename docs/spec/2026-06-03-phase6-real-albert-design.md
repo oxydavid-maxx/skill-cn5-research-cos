@@ -11,15 +11,15 @@
 1. **Real Albert adapter** (`albert/real_adapter.py`, behind the existing `Auditor` Protocol / `build_auditor` seam): build `albert_input.json` from `ResearchState` (the current answer/proposal + the SOT brief + **the prior OPEN challenges** from `albert_challenge_map` so Albert tracks/resolves rather than re-asks — feeds the P4b convergence engine), subprocess-invoke `run_albert.py` with the stage-selected speed, parse via `to_audit_result` → `AuditResult`, merge back through `challenge_map.upsert` (resolved/escalated/new). Replaces `RealAlbertSimulator` at the `--albert real` hook (simulator kept for `--albert sim` / fast deterministic tests).
 2. **Dependency resolution** (`albert/locate.py`, mirror `paperwork/locate.py`): resolve `ALBERT_HOME` (env → sibling `skill-cn5-i-am-albert` checkout discovery → absent). NEVER vendored; never user-local-hardcoded. Preflight verifies `run_albert.py` present + captures Albert version. Absent → the audit **degrades VISIBLY** and a degraded audit may NOT drive `terminal_stop` / count as a passed audit (decision #8, already enforced — assert with real Albert).
 3. **4-speed cascade** (deterministic `audit_tier_for(stage, state) -> speed`, §14, wired through `build_auditor`):
-   - per-iteration sentinel → **cheap sentinel** (the existing haiku simulator) for now; swap to Albert `--flash` once it exists (P7/later). Real Albert is 5–20min → MUST NOT run per-iteration.
+   - per-iteration sentinel → **Albert `--flash`** (user is adding it to Albert: a DIRECT single **Opus** call — Albert's real rubric, ~seconds, no FSM). This is now IN P6 (no longer deferred). It REPLACES the haiku simulator as the per-iteration sentinel. Full Albert (quick/fast/normal, 5–20min) MUST NOT run per-iteration. (Fallback: if `--flash` isn't available at build time, keep the haiku sentinel + swap when ready — one-line at this tier.)
    - escalation (readiness approaching / last sentinel flagged drift/premature-risk high) → **`--quick` (5min)**.
    - pre-synthesize (before the §22 memo gate) → **`--fast` (10min)**.
    - final / high-stakes / explicit deep / H6 → **normal (20min)**.
 4. **Convergence integration:** Albert's output (challenges + status + the §20 signals: premature_end_risk / research_drift_risk / recommended_next_action) flows into `challenge_map.upsert` + `decision/convergence`; prior open challenges flow INTO `albert_input.json`. This is the closed loop the P4b engine was built for — now driven by the real reviewer.
 5. **Live debate stream (P5b):** the StageReporter's `albert_audit` block now renders the REAL Albert output (it already renders the `AuditResult` shape — confirm no change needed). Albert's own per-run progress (it has a heartbeat) should not double-print; surface a concise per-call line.
 
-## Cost / latency (measured-aligned)
-Real Albert at a gate = 5–20min, run RARELY (gates only). Per-iteration stays cheap (sentinel). Loop body ~$1/iter unchanged. The soft budget warning (P5) now also reflects Albert-gate time. A `run-auto` overnight with real Albert at gates could be hours — the soft budget line lets the operator interrupt; no hard cap (P5c decision).
+## Cost / latency (measured-aligned + the flash=Opus tradeoff)
+Real Albert at a gate = 5–20min, run RARELY (gates only). **Per-iteration sentinel = Albert `--flash` = one Opus call (~secs).** HONEST cost note: Opus-per-iteration is pricier than the prior haiku sentinel (Opus ≫ haiku per token), so the measured ~$1/iter floor RISES somewhat — but it's ONE bounded structured call/iter (not the FSM), and it buys the REAL Albert rubric every round (the user's deliberate quality choice). The soft budget warning (P5) surfaces the running cost so the operator can interrupt; no hard cap (P5c). A `run-auto` overnight with flash per-iter + quick/fast/normal at gates could be hours — soft budget line is the control.
 
 ## Deterministic-vs-LLM
 Deterministic: speed selection, input assembly, contract parse, convergence merge, degrade guard. LLM/agent: the real Albert subprocess (its own FSM). Control stays in our Python.
@@ -31,4 +31,4 @@ Deterministic: speed selection, input assembly, contract parse, convergence merg
 - Committed; push on user confirmation.
 
 ## Out of scope (→ P7)
-flash mode wiring; v2 email-reply supplement; PostgresSaver; packaging; broad hardening/monitoring.
+v2 email-reply supplement; PostgresSaver; packaging; broad hardening/monitoring. (flash sentinel is now IN P6 — user is adding Albert `--flash` = one Opus call.)

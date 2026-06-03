@@ -117,7 +117,7 @@ P2 is **split into two independent phases P2a + P2b** (P3–P6 numbering UNCHANG
 - **Albert FOUR SPEEDS — decided 2026-06-03 (user added them to the Albert skill):** real Albert exposes **`flash` (LLM-only, ~seconds) · `quick` (5min) · `fast` (10min) · `normal` (20min)**. Map them to cockpit audit points by stage + risk, selected DETERMINISTICALLY (`audit_tier_for(stage, state) -> speed`, §14; wired through the existing `build_auditor(tier, ...)` seam → real Albert with the speed flag):
   | Cockpit audit point | Albert speed | Why |
   |---|---|---|
-  | every iteration (sentinel) | **flash** | catch drift/premature each round; cheap enough every iter; **REPLACES the haiku simulator** (flash = Albert's real rubric, one LLM call) |
+  | every iteration (sentinel) | **flash** (Albert `--flash` = one direct **Opus** call, ~secs; user-added) | catch drift/premature each round; **REPLACES the haiku simulator** (flash = Albert's real rubric, one Opus call). Now a P6 deliverable. Opus-per-iter is pricier than haiku but bounded (one call) — deliberate quality choice. |
   | escalation (readiness approaching / last flash flagged drift/premature-risk high) | **quick (5min)** | mid-depth when it gets serious |
   | pre-synthesize (before the §22 memo gate) | **fast (10min)** | thorough before the deliverable |
   | final / high-stakes / explicit deep / H6 | **normal (20min)** | deepest before "Done" / high-impact memo |

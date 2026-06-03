@@ -11,8 +11,8 @@ Close the round-trip the user wanted (so coming back is not terminal-only):
 - Then auto-resume the checkpointed run (`Command(resume=...)` / next iteration). The human REPLIES on email; the cockpit does the two steps (file→reference, trigger) automatically.
 - Polling cadence + idempotency (don't re-ingest the same reply); fail-soft if Outlook unavailable (fall back to the v1 terminal instructions already in the notification email).
 
-### 2. flash sentinel (LLM-only per-iteration Albert)
-When the user adds `--flash` (LLM-only, ~secs) to the Albert skill: swap the per-iteration cheap sentinel from the haiku simulator → Albert `--flash` (Albert's real rubric, one LLM call). One-line change at the `audit_tier_for` per-iteration tier. Until then, the haiku sentinel stands (P6).
+### 2. flash sentinel — MOVED TO P6
+The user is adding `--flash` (a direct single Opus call) to the Albert skill, so the per-iteration sentinel = Albert `--flash` is now a **P6** deliverable, not P7. (Left here as a pointer only.)
 
 ### 3. Hardening
 - `--resume` robustness across ALL phases (LangGraph checkpoint resume after a mid-stage crash — the global "resume don't rerun" discipline); test crash-then-resume at each seam.
