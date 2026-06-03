@@ -30,9 +30,12 @@ P4b has **three components**. They share one theme: the adversarial loop must ca
 
 ---
 
-## Component 3 — Citation discipline / anti-fabrication (our own design — verified NOT in GPTR/ODR)
-**Source-grounded correction:** NEITHER GPTR NOR ODR does verbatim/fuzzy claim→source verification (both rely on prompt instruction only). So verbatim-≥0.85 AND flatten-to-primary are **OUR net-new design** — we will NOT present them as industry-standard.
-- **Verbatim verify (`citation/verify.py`, deterministic, no LLM, no dep):** each claim already carries a verbatim quote (the researcher extracts it). Verify the quote appears in the cited source text via stdlib `difflib` ratio **≥ 0.85**. Pure, unit-tested at the 0.85 boundary (match / no-match / paraphrase).
+## Component 3 — Citation discipline / anti-fabrication (SPLIT: web = ours / doc = reuse paperwork)
+**Source-grounded correction:** NEITHER GPTR NOR ODR does verbatim/fuzzy claim→source verification (both rely on prompt instruction only). So verbatim-≥0.85 AND flatten-to-primary are **OUR net-new design** for WEB sources — we will NOT present them as industry-standard.
+
+**Overlap correction (don't reinvent paperwork):** paperwork's research side ALREADY enforces document-grounded citation — `research-synthesis` emits a 5-section topic-report where every §4 claim carries `[[ref-id, §N]]`, gated by its `quality-gate` (citation-coverage checks), and `collect_section_evidence.py` / `backfill_evidence_quotes.py` produce verbatim quotes (Fragment-First: "never from general knowledge"). So citation discipline is **ROUTED by source origin**:
+- **`origin == "internal"` (doc/datasheet/standard) → REUSE paperwork.** The verbatim quote + resolvable `[[ref-id, §N]]` citation already come from the P4a paperwork path (`collect_section_evidence` quotes; the survey's quality-gate). We do NOT re-run a `difflib` check on these — they are paperwork-verified by construction. We only carry the quote + ref into our `Claim`.
+- **`origin == "web"` (no paperwork coverage — it is Fragment-First, never touches the web) → OUR verbatim verify (`citation/verify.py`, deterministic, no LLM, no dep):** the researcher's verbatim quote must appear in the cited web source text via stdlib `difflib` ratio **≥ 0.85**. Pure, unit-tested at the 0.85 boundary (match / no-match / paraphrase). This is the net-new piece paperwork does not provide.
 - **Tiered failure policy (`citation/policy.py`, deterministic — the user's escalation rule):**
   1. Quote fails verify → mark the claim `unverified`; it is **never emitted as fact**.
   2. **Auto re-verify**: the loop re-researches that issue / seeks a corroborating PRIMARY source ("未驗證就去驗證").
@@ -52,16 +55,20 @@ P4b has **three components**. They share one theme: the adversarial loop must ca
 - **Deterministic:** challenge merge/dedup, convergence tracking, heuristic filter, verbatim verify, criticality classification, escalation routing, flatten-to-primary, override-reducer semantics.
 - **LLM (narrow):** the auditor (now sees prior challenges), the researcher (now challenge-directed), the curator (opt-in). All structured-output; control stays in Python.
 
+## P5 note — reuse paperwork for document-grounded synthesis (forward decision, not built here)
+When P5 (synthesis/memo) lands: the DOCUMENT-grounded findings/evidence-summary sections should **REUSE paperwork `research-synthesis`** (5-section cited topic-report) + its `quality-gate`, NOT a re-written cited-synthesis. The cockpit's P5 wraps that with what paperwork lacks — web findings, the Albert Challenge Map, blockers, Required-Human-Decisions, the decision-memo format (§22). Division of labor mirrors P4a's scripts-as-toolbox: paperwork = document→cited-artifact compiler; cockpit = web + audit + convergence + HITL + decision-memo orchestrator. (Recorded so P5 doesn't reinvent paperwork's synthesis.)
+
 ## Out of scope
 - B3 grounded decomposition (cheap search before issue-expand — real in GPTR `plan_research`, deferred; auto-reverify already gives grounding-like targeted search).
 - Embedding-based ranking (matched GPTR's small-input skip → not needed at our scale).
-- P5 synthesis/final memo (still stub; the TC4 baseline's polished deliverable needs P5).
+- P5 synthesis/final memo (still stub; the TC4 baseline's polished deliverable needs P5; reuse paperwork per the P5 note above).
 - GPTR/ODR as installed research engines (rejected — nesting two research loops; we absorbed PATTERNS, not code).
+- Re-implementing document-grounded citation/synthesis that paperwork already does (Component 3 routes internal-doc claims to paperwork's existing machinery).
 
 ## Tests / DoD
 - **Convergence (deterministic, mock brains):** a challenge raised round N is MERGED (not duplicated) round N+1; an answered challenge → `resolved`; an open challenge is fed into the next researcher prompt + COS prioritization (assert the prompt/selection contains it); convergence signal drops as challenges resolve; a run where challenges keep resolving terminates with `open→0`, a run with an unanswerable critical challenge escalates to a human gate (not infinite loop).
 - **Ranking (deterministic):** heuristic dedup/junk-drop/top-k on hand-built source lists; curator opt-in mocked (5 dims, filter-not-rewrite, fallback-to-uncurated on parse failure).
-- **Citation (deterministic):** verbatim verify at the 0.85 boundary (match/no-match/paraphrase); tiered policy — unverified→reverify; critical-unverified→human gate; non-critical-unverified→flag + emission-gate refuses; flatten-to-primary rejects a claim citing a digest.
+- **Citation (deterministic):** source-origin routing — a `web` claim runs the `difflib` verify at the 0.85 boundary (match/no-match/paraphrase); an `internal` claim is carried as paperwork-verified (assert NO `difflib` re-run, quote + `[[ref-id,§N]]` preserved). Tiered policy — unverified web claim→reverify; critical-unverified→human gate; non-critical-unverified→flag + emission-gate refuses; flatten-to-primary rejects a claim citing a digest.
 - **Regression:** P1–P4a (all current tests) STAY GREEN.
 - **Live (opt-in `CN5_COS_LLM_TESTS=1`):** a short real run where Albert raises a challenge, the next round's research targets it, and it resolves (or escalates) — proving the loop converges end-to-end on real LLMs.
 - Committed; push on user confirmation.
