@@ -62,6 +62,14 @@ class Scorer(Protocol):
     def score(self, state: ResearchState) -> ReadinessScore: ...
 
 
+@runtime_checkable
+class Synthesizer(Protocol):
+    # P5: write the §22 decision-memo prose, ONE entry per section key.
+    # Returns {section_key: prose}. The section SET + gates + blocker labels are
+    # deterministic Python (synthesis/memo.py); only the prose is LLM.
+    def write_sections(self, state: ResearchState) -> dict[str, str]: ...
+
+
 @dataclass
 class Brains:
     clarify_gate: ClarifyGate
@@ -78,3 +86,6 @@ class Brains:
     # synthesize/terminal or a high-risk pull). P3: still the simulator/stub
     # (real Albert FSM = P6). Defaults to None; build_brains wires a tiered one.
     deep_auditor: Auditor | None = None
+    # P5 synthesis brain — writes the §22 memo prose per section. Defaults to
+    # None; build_brains wires the mock stub / RealSynthesizer.
+    synthesizer: "Synthesizer | None" = None
