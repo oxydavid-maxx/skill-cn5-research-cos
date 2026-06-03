@@ -20,7 +20,7 @@ def test_run_pauses_at_h6_then_resume_prints_summary_and_scores(tmp_path):
     summary with readiness scores + the cost/latency/calls line."""
     env = {"CN5_COS_BASE_DIR": str(tmp_path)}
     r = runner.invoke(app, ["run", "--question", "AI overnight?", "--run-id", "run1",
-                            "--max-iterations", "8"], env=env)
+                            "--max-iterations", "8", "--allow-redirect"], env=env)
     assert r.exit_code == 0, r.output
     # Per-iteration Chinese summary headers printed during the loop.
     assert "Albert" in r.output

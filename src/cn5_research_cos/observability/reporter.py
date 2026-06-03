@@ -16,10 +16,60 @@ invocation form and is trivially red-teamable (Task 5). No LLM, no wall-clock.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
+
+from .errors import VisibilityContractError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..models import AuditResult, Decision, ReadinessScore, ResearchState
+
+
+def _force_utf8(stream) -> None:
+    """Best-effort force UTF-8 on a text stream so CJK renders with no mojibake.
+
+    ``errors='replace'`` so a console that cannot encode a glyph degrades it to
+    '?' instead of raising ``UnicodeEncodeError`` (which would break the live
+    sink). Fail-SILENT: any stream that cannot reconfigure (StringIO, an exotic
+    wrapper) is left as-is. Mirrors ``run_albert.py::_force_utf8_console``."""
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - best-effort; never break the run
+        pass
+
+
+def _open_tty():
+    """Open the real terminal device for an OPTIONAL bonus live write, or return
+    None. ``CONOUT$`` on Windows / ``/dev/tty`` on POSIX. Best-effort: returns
+    None on any failure (no terminal exists, headless, no permission). NEVER
+    raises — the caller treats a missing tty as "no bonus", not an error."""
+    path = "CONOUT$" if sys.platform.startswith("win") else "/dev/tty"
+    try:
+        return open(path, "w", encoding="utf-8", errors="replace")
+    except Exception:  # noqa: BLE001 - no real terminal here; that's fine
+        return None
+
+
+def _tty_bonus(block: str) -> None:
+    """Write ``block`` to the real terminal device IF one opens. FAIL-SILENT in
+    EVERY way: opening, writing, flushing, and closing errors are all swallowed.
+    This is the OPTIONAL bonus from the spec — never the guarantee, never raises,
+    and must never break the user's chosen ``> log`` / pipe."""
+    handle = None
+    try:
+        handle = _open_tty()
+        if handle is None:
+            return
+        handle.write(block)
+        handle.flush()
+    except Exception:  # noqa: BLE001 - bonus is fail-silent in EVERY way (open/write/flush)
+        pass
+    finally:
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 class StageReporter:
@@ -33,18 +83,63 @@ class StageReporter:
     The reporter only labels + writes + flushes.
     """
 
-    def __init__(self, stream: TextIO | None = None) -> None:
+    def __init__(self, stream: TextIO | None = None, *, run_dir=None) -> None:
         self.stream: TextIO = stream if stream is not None else sys.stdout
+        # P5d guarantee #2: force UTF-8 on the live stream best-effort so CJK debate
+        # cards render with no mojibake on any console. Fail-silent — a stream that
+        # cannot reconfigure (StringIO, an exotic wrapper) must not break the run.
+        _force_utf8(self.stream)
+        # P5d: the durable sink — the ONE real 100%. If a run_dir is given, every
+        # stage block is appended to ``<run_dir>/debate.md`` (utf-8, flushed),
+        # fail-CLOSED. run_dir is OPTIONAL (back-compat: a StringIO-only reporter
+        # with no run_dir writes no file and behaves exactly as it did in P5b).
+        self._debate_path: Path | None = (
+            Path(run_dir) / "debate.md" if run_dir is not None else None
+        )
+        if self._debate_path is not None:
+            try:
+                self._debate_path.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise VisibilityContractError(
+                    f"Failed to create debate directory {self._debate_path.parent}: {exc}",
+                    sink=str(self._debate_path.parent),
+                ) from exc
 
     def stage(self, name: str, body: str) -> None:
         """Write a ``=== [name] ===`` header, the body, and a trailing blank line,
         then FLUSH. The flush is the guarantee that the block reaches the pipe now
-        (not at process exit)."""
+        (not at process exit). If a ``run_dir`` was given, the SAME block is first
+        appended to the durable ``debate.md`` sink (fail-closed)."""
         block = f"=== [{name}] ===\n{body}\n\n"
+        self._persist(name, block)
         self.stream.write(block)
         # Flush AFTER the whole block so a reader sees the complete stage at once,
         # and so the next stage cannot be coalesced into a single end-of-run dump.
         self.stream.flush()
+        # P5d optional bonus (fail-SILENT, never a guarantee): also write to the
+        # real terminal device (CONOUT$ / /dev/tty) IF it opens — helps the
+        # "piped-but-also-watching in a real terminal" case (e.g. `cos run | tee`).
+        # ANY error here is swallowed: it must never break the user's `> log`.
+        _tty_bonus(block)
+
+    def _persist(self, name: str, block: str) -> None:
+        """Append a block to the durable ``debate.md`` sink, flushed, FAIL-CLOSED.
+
+        Mirrors ``albert/deliberation.py``: a write failure raises
+        ``VisibilityContractError`` — for an audit-driven cockpit, losing the
+        auditable record must stop the run, not degrade silently. No-op when no
+        ``run_dir`` was provided (back-compat)."""
+        if self._debate_path is None:
+            return
+        try:
+            with open(self._debate_path, "a", encoding="utf-8") as f:
+                f.write(block)
+                f.flush()
+        except OSError as exc:
+            raise VisibilityContractError(
+                f"Failed to append debate block to {self._debate_path}: {exc}",
+                phase=name, sink=str(self._debate_path),
+            ) from exc
 
     def line(self, text: str) -> None:
         """Emit a single flushed line (used by harnesses / the red-team script for

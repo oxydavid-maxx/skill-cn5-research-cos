@@ -45,10 +45,14 @@ def test_albert_visible_through_subprocess_pipe():
     challenge line is observed BEFORE the END marker and BEFORE the process exits."""
     assert SCRIPT.exists(), f"missing red-team entrypoint: {SCRIPT}"
     proc = subprocess.Popen(
-        [sys.executable, str(SCRIPT)],
+        # P5d: the script now refuses a hidden (non-tty) run unless --allow-redirect;
+        # this P5b test deliberately pipes stdout to prove INCREMENTAL delivery, so
+        # it opts into the escape (the durable debate.md still has everything).
+        [sys.executable, str(SCRIPT), "--allow-redirect"],
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8", errors="replace",  # P5d: the child forces UTF-8 (guarantee #2)
         bufsize=1,                # line-buffered text pipe (non-tty)
         env=_child_env(),
         cwd=str(REPO),
@@ -111,8 +115,9 @@ def test_albert_visible_through_subprocess_pipe():
 def test_redteam_script_exit_code_zero():
     """The harness itself runs clean (exit 0) — a colleague can rely on it."""
     proc = subprocess.run(
-        [sys.executable, str(SCRIPT)],
+        [sys.executable, str(SCRIPT), "--allow-redirect"],  # P5d: escape the hidden-run guard
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        encoding="utf-8", errors="replace",  # P5d: the child forces UTF-8 (guarantee #2)
         env=_child_env(), cwd=str(REPO), timeout=120,
     )
     assert proc.returncode == 0, proc.stdout

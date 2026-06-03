@@ -26,7 +26,8 @@ def _seed_pull_state(base_dir, rid="cliplull"):
 def test_run_auto_reaches_stop(tmp_path):
     env = {"CN5_COS_BASE_DIR": str(tmp_path)}
     r = runner.invoke(app, ["run-auto", "--question", "AI overnight?",
-                            "--run-id", "ra1", "--max-iterations", "8"], env=env)
+                            "--run-id", "ra1", "--max-iterations", "8",
+                            "--allow-redirect"], env=env)
     assert r.exit_code == 0, r.output
     assert "停止原因" in r.output or "stop" in r.output.lower()
     assert (tmp_path / "ra1" / "state.json").exists()
@@ -47,7 +48,7 @@ def test_run_interactive_pauses_at_gate_and_resume_continues(tmp_path):
     rid = _seed_pull_state(tmp_path, "cliint")
     # cos run resumes the seeded run (state.json), runs until the pull gate pauses.
     r = runner.invoke(app, ["run", "--run-id", rid, "--resume-state",
-                            "--max-iterations", "6"], env=env)
+                            "--max-iterations", "6", "--allow-redirect"], env=env)
     assert r.exit_code == 0, r.output
     assert "PAUSED" in r.output or "暫停" in r.output
     assert "cos resume" in r.output  # tells the human how to resume
