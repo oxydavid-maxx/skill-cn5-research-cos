@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from ..brains.synthesis import SECTION_KEYS
+from ..brains.synthesis import FINDINGS_KEY, SECTION_KEYS
 from ..citation import policy as cpolicy
 from ..citation import verify as cverify
 from ..decision import risk as crisk
@@ -31,17 +31,40 @@ KEY_CLAIM_CONF = 4
 # Single source of truth for the 9 section keys (mirrors brains.synthesis.SECTION_KEYS).
 NINE_SECTION_KEYS = list(SECTION_KEYS)
 
+# Component A: the FINDINGS section title (the primary deliverable, leads).
+FINDINGS_TITLE = "研究發現（Findings — 已引用 [S-…]，答覆原始問題）"
+
+# Component A — the deliverable EMISSION ORDER (findings-first). The findings (the
+# answer/artifact synthesized from evidence) LEAD; the evidence-facing §22 sections
+# follow; the decision/audit sections (Albert challenge map, blocking, required
+# human decisions, recommended next action, appendix) are the SUPPORTING TAIL.
+# This is distinct from the synthesis schema order (SECTION_KEYS): the synthesizer
+# fills the 9 §22 keys; assembly re-orders them so the deliverable leads with the
+# findings, not the §22 questions dump.
+_DECISION_TAIL_KEYS = [
+    "executive_answer",
+    "can_cannot_say",
+    "risks_assumptions",
+    "albert_challenge_map",
+    "blocking",
+    "required_human_decisions",
+    "recommended_next_action",
+    "appendix",
+]
+MEMO_ORDER = [FINDINGS_KEY, "evidence_summary", *_DECISION_TAIL_KEYS]
+
 # Fixed display titles (Traditional Chinese, §22 wording).
 SECTION_TITLES: dict[str, str] = {
-    "executive_answer": "一、Executive Answer（主管級結論）",
-    "albert_challenge_map": "二、Albert Challenge Map（質疑地圖）",
-    "can_cannot_say": "三、What We Can / Cannot Say（能說 / 不能說）",
-    "blocking": "四、What Is Blocking Us（阻擋點）",
-    "required_human_decisions": "五、Required Human Decisions / Inputs（需人類決策 / 輸入）",
-    "evidence_summary": "六、Evidence Summary（證據摘要，已引用）",
-    "risks_assumptions": "七、Risks & Assumptions（風險與假設）",
-    "recommended_next_action": "八、Recommended Next Action（建議下一步）",
-    "appendix": "九、Appendix（附錄）",
+    FINDINGS_KEY: FINDINGS_TITLE,
+    "evidence_summary": "證據摘要（Evidence Summary，已引用）",
+    "executive_answer": "Executive Answer（主管級結論）",
+    "albert_challenge_map": "Albert Challenge Map（質疑地圖）",
+    "can_cannot_say": "What We Can / Cannot Say（能說 / 不能說）",
+    "blocking": "What Is Blocking Us（阻擋點）",
+    "required_human_decisions": "Required Human Decisions / Inputs（需人類決策 / 輸入）",
+    "risks_assumptions": "Risks & Assumptions（風險與假設）",
+    "recommended_next_action": "Recommended Next Action（建議下一步）",
+    "appendix": "Appendix（附錄）",
 }
 
 
@@ -241,8 +264,19 @@ def assemble_memo(state: ResearchState, synthesizer) -> Memo:
     route = route_citations(state)
     needs_supplement = [t.requested_input for t in route.needs_supplement]
 
+    # Component A: the findings answer LEADS. If the synthesizer returned no
+    # findings prose (defensive), fall back to an honest N/A — never fabricated.
+    findings_body = str(prose.get(FINDINGS_KEY, "") or "").strip()
+    if not findings_body:
+        findings_body = ("N/A（無可引用之證據，未臆測）。" if not state.evidence
+                         else "（findings 缺失；請參考下方證據摘要。）")
+
     sections: list[MemoSection] = []
-    for key in NINE_SECTION_KEYS:
+    for key in MEMO_ORDER:
+        if key == FINDINGS_KEY:
+            sections.append(MemoSection(key=key, title=SECTION_TITLES[key],
+                                        body=findings_body))
+            continue
         body = str(prose.get(key, "") or "").strip()
         if key == "blocking":
             labeled = _render_blockers(blockers)
