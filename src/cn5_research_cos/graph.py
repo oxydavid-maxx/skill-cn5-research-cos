@@ -316,6 +316,11 @@ def run_research_fanout(rs: ResearchState, selected: list[str], brains, *,
     for bundle in raw_bundles:
         try:
             bundle = brains.source_critic.review(bundle)
+            # P4b Component 2: two-altitude source ranking AFTER research/critique,
+            # BEFORE compress — heuristic dedup/junk/top-k (+ opt-in LLM curator),
+            # re-pruning claim refs to surviving sources.
+            from .ranking import pipeline as _ranking
+            bundle = _ranking.apply(bundle)
             bundle = brains.compressor.compress(bundle)
         except Exception:  # noqa: BLE001 - one bad critique never kills the batch
             continue
