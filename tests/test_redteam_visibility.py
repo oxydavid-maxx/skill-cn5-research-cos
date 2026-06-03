@@ -49,6 +49,7 @@ def test_albert_visible_through_subprocess_pipe():
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8", errors="replace",  # P5d: the child forces UTF-8 (guarantee #2)
         bufsize=1,                # line-buffered text pipe (non-tty)
         env=_child_env(),
         cwd=str(REPO),
@@ -113,6 +114,7 @@ def test_redteam_script_exit_code_zero():
     proc = subprocess.run(
         [sys.executable, str(SCRIPT)],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        encoding="utf-8", errors="replace",  # P5d: the child forces UTF-8 (guarantee #2)
         env=_child_env(), cwd=str(REPO), timeout=120,
     )
     assert proc.returncode == 0, proc.stdout
