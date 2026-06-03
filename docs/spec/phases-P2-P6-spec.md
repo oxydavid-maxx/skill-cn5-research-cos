@@ -114,8 +114,15 @@ P2 is **split into two independent phases P2a + P2b** (P3–P6 numbering UNCHANG
 
 **⚠️ P6 CARRIES FORWARD DEPENDENCIES from P3/P4 (recorded so they are not forgotten):**
 - **Swap the Albert SIMULATOR for the real external skill** `skill-cn5-i-am-albert` behind the frozen `to_audit_result` contract — and it must feed the P4b **convergence engine** (prior open challenges in, resolved/escalated out, dedup/merge). The real Albert is what the convergence loop was built to converge against.
-- **Albert FAST MODE (~5min) — decided 2026-06-03 (user adds it to the Albert skill):** real Albert gets a ~5-min fast mode, so it is cheap enough to **run liberally — just use real Albert, do NOT over-gate it / do NOT replace it with cheap-sentinel-only.** This RELAXES the P3 audit-tiering assumption: fast-Albert can run per-iteration (or near it); the cheap-haiku-sentinel may be reduced or dropped once fast-Albert is in. `build_auditor(tier, model)` seam supports running fast-Albert as the default tier + deep-Albert at gates. (Cost measured 2026-06-03: loop is ~$1/iter; the late-drift sacrifice of gating disappears with a 5-min Albert.)
-- **Audit tiering full model-cascade** (deferred from P3 by evidence): only escalate to a deeper/slower Albert pass if fast-Albert demonstrably MISSES things; `build_auditor(tier, model)` seam already exists.
+- **Albert FOUR SPEEDS — decided 2026-06-03 (user added them to the Albert skill):** real Albert exposes **`flash` (LLM-only, ~seconds) · `quick` (5min) · `fast` (10min) · `normal` (20min)**. Map them to cockpit audit points by stage + risk, selected DETERMINISTICALLY (`audit_tier_for(stage, state) -> speed`, §14; wired through the existing `build_auditor(tier, ...)` seam → real Albert with the speed flag):
+  | Cockpit audit point | Albert speed | Why |
+  |---|---|---|
+  | every iteration (sentinel) | **flash** | catch drift/premature each round; cheap enough every iter; **REPLACES the haiku simulator** (flash = Albert's real rubric, one LLM call) |
+  | escalation (readiness approaching / last flash flagged drift/premature-risk high) | **quick (5min)** | mid-depth when it gets serious |
+  | pre-synthesize (before the §22 memo gate) | **fast (10min)** | thorough before the deliverable |
+  | final / high-stakes / explicit deep / H6 | **normal (20min)** | deepest before "Done" / high-impact memo |
+  Cost-aligned: flash per-iteration doesn't move the ~$1/iter floor; quick/fast/normal run only at gates (rare). Supersedes the earlier single "fast mode" note.
+- **Audit tiering full model-cascade** (deferred from P3 by evidence): the 4-speed mapping above IS the cascade; only deepen a step if the cheaper speed demonstrably MISSES things; `build_auditor(tier, ...)` seam already exists.
 - **paperwork version-contract hardening:** pin/verify the gerrit `CN5_PAPERWORK_HOME` dependency (v7.x `docling-strict`); preflight version check + the visible degrade-to-web-only path (P4a) are the seam.
 
 **DoD / verify:** richer Albert audit demonstrably catches more; real Albert drives the convergence loop end-to-end; e2e hardened; ship-ready; packaging resolved.
