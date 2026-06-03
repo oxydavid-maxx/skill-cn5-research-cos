@@ -275,6 +275,12 @@ class Memo(BaseModel):
     sections: list[MemoSection] = Field(default_factory=list)
     blockers: list[Blocker] = Field(default_factory=list)
     unverified_key_claims: list[str] = Field(default_factory=list)
+    # P5c confidence policy: unverified-CRITICAL claims that could not be verified
+    # and were routed to a HumanTask (needs human supplement). These are surfaced
+    # in the "What We Cannot Say" / "Required Human Decisions" sections — clearly
+    # flagged "needs human supplement", NEVER presented as verified fact. The memo
+    # STILL emits with these present (the loop continues, never blocks).
+    needs_supplement: list[str] = Field(default_factory=list)
     emitted: bool = False
     refused_reason: str | None = None
 
@@ -323,6 +329,11 @@ class ResearchState(BaseModel):
     # dispatched this run, so the supervisor never re-researches the same query
     # (P2 acceleration). A list (not set) for JSON round-trip; order-insensitive.
     researched_queries: list[str] = Field(default_factory=list)
+
+    # P5c multi-format reference intake: per-run dedup keys ("<name>::<mtime_ns>")
+    # for files already converted from runs/<run_id>/reference/, so each dropped
+    # file is processed once even if the folder is re-scanned every iteration.
+    processed_references: list[str] = Field(default_factory=list)
 
     # output
     final_memo: str | None = None

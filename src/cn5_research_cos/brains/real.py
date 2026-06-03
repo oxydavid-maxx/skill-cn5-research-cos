@@ -121,6 +121,13 @@ _RESEARCH_SCHEMA = {
                     "claim": {"type": "string"},
                     "confidence": {"type": "integer", "minimum": 0, "maximum": 5},
                     "source_indices": {"type": "array", "items": {"type": "integer"}},
+                    # P5c: a per-CLAIM VERBATIM quote — a span copied EXACTLY from
+                    # one of this claim's cited sources' `excerpt`/text. The P4b web
+                    # citation verifier checks this quote is present in the cited
+                    # source; the synthesized `claim` text is a paraphrase and would
+                    # never match, so a verbatim `quote` is what makes a real claim
+                    # verify. Mapped into Claim.notes by _build_bundle.
+                    "quote": {"type": "string"},
                     "notes": {"type": "string"},
                 },
                 "required": ["claim"],
@@ -140,8 +147,12 @@ _RESEARCH_SYSTEM = (
     "the results. One job: gather evidence for THIS issue only — do not fan out. "
     "Map each claim to the source(s) it came from via source_indices (0-based into "
     "your sources array). For each source include a short verbatim `excerpt` — the "
-    "sentence(s) containing your quote (1-3 sentences, NOT the full page) — so the "
-    "claim's quote can be verified against its source. Return STRICT JSON per schema."
+    "sentence(s) containing your quote (1-3 sentences, NOT the full page). For EACH "
+    "claim also include a per-claim `quote`: a VERBATIM span copied EXACTLY (word-"
+    "for-word, same casing/punctuation) from one of that claim's cited sources' "
+    "`excerpt` — it MUST be a literal substring of that source's text, NOT a "
+    "paraphrase of your `claim`. This lets the claim be verified against its source. "
+    "Return STRICT JSON per schema."
 )
 
 
@@ -202,9 +213,13 @@ class RealResearcher:
                 sources[idx].id for idx in c.get("source_indices", [])
                 if isinstance(idx, int) and 0 <= idx < len(sources)
             ]
+            # The per-claim VERBATIM quote goes into notes, which is where
+            # citation/verify's _quote_of reads the quote to verify against the
+            # cited source. Prefer `quote`; fall back to `notes` for back-compat.
+            verbatim_quote = (c.get("quote") or c.get("notes") or "").strip()
             claims.append(Claim(
                 claim=c["claim"], source_refs=refs,
-                confidence=int(c.get("confidence", 0)), notes=c.get("notes", ""),
+                confidence=int(c.get("confidence", 0)), notes=verbatim_quote,
             ))
 
         return EvidenceBundle(

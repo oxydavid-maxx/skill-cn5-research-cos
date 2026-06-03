@@ -33,8 +33,8 @@ import tempfile
 from pathlib import Path
 
 from ..llm import sdk_client
-from ..models import EvidenceBundle, ResearchState
-from .paperwork import evidence_map, scripts
+from ..models import Claim, EvidenceBundle, ResearchState, Source, SourceType
+from .paperwork import convert, evidence_map, scripts
 from .paperwork.locate import find_paperwork_home, paperwork_version
 
 logger = logging.getLogger("cn5_research_cos.internal_doc")
@@ -166,6 +166,115 @@ def _survey_folders(state: ResearchState) -> list[Path]:
         if p.is_dir() and (p / "reference-map.yaml").is_file():
             out.append(p)
     return out
+
+
+# --------------------------------------------------------------------------- #
+# P5c — per-run reference-folder scan + multi-format intake
+# --------------------------------------------------------------------------- #
+def _reference_dir(state: ResearchState, base_dir: str) -> Path:
+    """The per-run reference drop folder: ``<base_dir>/<run_id>/reference/``."""
+    return Path(base_dir) / state.run_id / "reference"
+
+
+def _dedup_key(path: Path) -> str:
+    """A per-file dedup key = name + mtime_ns (a file is processed once unless it
+    changes on disk)."""
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        mtime = 0
+    return f"{path.name}::{mtime}"
+
+
+_QUOTE_MAX_CHARS = 280
+
+
+def _fragment_quote(text: str) -> str:
+    """First non-empty, non-header prose line of a fragment (the verbatim quote)."""
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#") and not line.startswith("|"):
+            return line[:_QUOTE_MAX_CHARS]
+    return (text or "").strip()[:_QUOTE_MAX_CHARS]
+
+
+def _bundle_from_fragment(path: Path, fragment: str) -> EvidenceBundle:
+    """Map a converted reference fragment -> the SAME internal-origin EvidenceBundle
+    shape as P4a (a Source with origin='internal' + a cited Claim carrying the
+    verbatim quote in notes)."""
+    src = Source(
+        id=f"S-REF-{path.stem}",
+        title=path.name,
+        url=f"reference/{path.name}",
+        source_type=SourceType.internal,
+        origin="internal",
+        excerpt=fragment[:2000],
+    )
+    quote = _fragment_quote(fragment)
+    claims: list[Claim] = []
+    gaps: list[str] = []
+    if quote:
+        claims.append(Claim(claim=f"{path.name} (dropped reference)",
+                            source_refs=[src.id], notes=quote))
+    else:
+        gaps.append(f"empty fragment from dropped reference {path.name}")
+    return EvidenceBundle(query=path.name, claims=claims, sources=[src],
+                          coverage_gaps=gaps)
+
+
+def scan_reference_folder(state: ResearchState, *, base_dir: str = "runs") -> list[EvidenceBundle]:
+    """Scan ``runs/<run_id>/reference/`` for NEW dropped files (dedup by name+mtime),
+    convert each by extension (PDF/office/HTML/text), and return the new
+    EvidenceBundles. A file processed in a prior iteration is skipped. An unknown
+    extension is NOT silently ignored — it produces a bundle recording a
+    coverage_gap + a VISIBLE warning. Missing folder -> no-op ([]).
+
+    Side effect: records each newly-processed file's dedup key into
+    ``state.processed_references`` so a re-scan of an unchanged folder yields nothing.
+    """
+    ref_dir = _reference_dir(state, base_dir)
+    if not ref_dir.is_dir():
+        return []
+    home = find_paperwork_home()
+    processed = set(state.processed_references)
+    bundles: list[EvidenceBundle] = []
+    for path in sorted(ref_dir.iterdir()):
+        if not path.is_file():
+            continue
+        key = _dedup_key(path)
+        if key in processed:
+            continue
+        try:
+            fragment = convert.convert_to_fragment(path, home)
+        except convert.UnsupportedReferenceError as e:
+            logger.warning(
+                "dropped reference %s has an UNSUPPORTED extension — NOT silently "
+                "ignored; recorded as a coverage_gap: %s", path.name, e,
+            )
+            bundles.append(EvidenceBundle(
+                query=path.name, claims=[], sources=[],
+                coverage_gaps=[f"unsupported dropped reference {path.name}: {e}"],
+            ))
+            processed.add(key)
+            state.processed_references.append(key)
+            continue
+        except scripts.PaperworkScriptError as e:
+            logger.error(
+                "dropped reference %s FAILED conversion (paperwork script error): "
+                "%s — recorded as an extraction failure, NOT silently dropped.",
+                path.name, e,
+            )
+            bundles.append(EvidenceBundle(
+                query=path.name, claims=[], sources=[],
+                coverage_gaps=[f"reference {path.name} {_EXTRACTION_FAILURE_MARKER}: {e}"],
+            ))
+            processed.add(key)
+            state.processed_references.append(key)
+            continue
+        bundles.append(_bundle_from_fragment(path, fragment))
+        processed.add(key)
+        state.processed_references.append(key)
+    return bundles
 
 
 # --------------------------------------------------------------------------- #
