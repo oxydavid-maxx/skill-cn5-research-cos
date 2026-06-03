@@ -275,6 +275,12 @@ class Memo(BaseModel):
     sections: list[MemoSection] = Field(default_factory=list)
     blockers: list[Blocker] = Field(default_factory=list)
     unverified_key_claims: list[str] = Field(default_factory=list)
+    # P5c confidence policy: unverified-CRITICAL claims that could not be verified
+    # and were routed to a HumanTask (needs human supplement). These are surfaced
+    # in the "What We Cannot Say" / "Required Human Decisions" sections — clearly
+    # flagged "needs human supplement", NEVER presented as verified fact. The memo
+    # STILL emits with these present (the loop continues, never blocks).
+    needs_supplement: list[str] = Field(default_factory=list)
     emitted: bool = False
     refused_reason: str | None = None
 
