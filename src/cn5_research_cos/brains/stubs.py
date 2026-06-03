@@ -188,6 +188,7 @@ class ScorerStub:
 def build_mock_brains() -> Brains:
     """The P1 deterministic stub bundle (zero LLM)."""
     from .auditor_tier import build_auditor
+    from .synthesis import MockSynthesizer
     sentinel = AuditorStub()
     return Brains(
         clarify_gate=ClarifyGateStub(),
@@ -204,6 +205,8 @@ def build_mock_brains() -> Brains:
         # the model by config). A fresh AuditorStub so the two tiers are distinct
         # objects (the gating test counts deep-tier calls independently).
         deep_auditor=build_auditor(tier="deep", base=AuditorStub()),
+        # P5 synthesis brain — deterministic mock (zero LLM).
+        synthesizer=MockSynthesizer(),
     )
 
 
@@ -246,6 +249,7 @@ def build_brains(llm: str = "mock", *, research_source: str = "web") -> Brains:
         # stack (keeps the P1 suite import-light and offline).
         from .real import (RealCompressor, RealIssueExpander, RealResearcher,
                            RealScorer, RealSkeptic, RealSourceCritic)
+        from .synthesis import RealSynthesizer
         from ..albert.simulator import RealAlbertSimulator
         from .auditor_tier import build_auditor
 
@@ -268,6 +272,8 @@ def build_brains(llm: str = "mock", *, research_source: str = "web") -> Brains:
             # Tier 2 deep auditor: in P3 still the SAME simulator class, tier-
             # tagged via the seam (real Albert FSM = P6 swaps `base`/`model`).
             deep_auditor=build_auditor(tier="deep", base=RealAlbertSimulator()),
+            # P5 synthesis brain — real narrow LLM (one structured haiku call).
+            synthesizer=RealSynthesizer(),
         )
         return _apply_research_source(real, research_source)
     raise NotImplementedError(

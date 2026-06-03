@@ -104,6 +104,10 @@ _RESEARCH_SCHEMA = {
                     "url": {"type": "string"},
                     "source_type": {"type": "string", "enum": _SOURCE_TYPES},
                     "quality": {"type": "string", "enum": _SOURCE_QUALITIES},
+                    # P5: a short verbatim snippet (the sentence(s) containing the
+                    # quote) so the P4b web citation verifier has source text to
+                    # difflib-match against. NOT the full page (token-efficient).
+                    "excerpt": {"type": "string"},
                 },
                 "required": ["title"],
                 "additionalProperties": False,
@@ -135,7 +139,9 @@ _RESEARCH_SYSTEM = (
     "for the given sub-issue, then extract grounded claims and their sources from "
     "the results. One job: gather evidence for THIS issue only — do not fan out. "
     "Map each claim to the source(s) it came from via source_indices (0-based into "
-    "your sources array). Return STRICT JSON per the schema."
+    "your sources array). For each source include a short verbatim `excerpt` — the "
+    "sentence(s) containing your quote (1-3 sentences, NOT the full page) — so the "
+    "claim's quote can be verified against its source. Return STRICT JSON per schema."
 )
 
 
@@ -187,6 +193,7 @@ class RealResearcher:
             sources.append(Source(
                 id=f"S-{issue_id}-{i}", title=s.get("title", "(untitled)"),
                 url=s.get("url"), source_type=stype, quality=qual,
+                origin="web", excerpt=s.get("excerpt", "") or "",
             ))
 
         claims: list[Claim] = []

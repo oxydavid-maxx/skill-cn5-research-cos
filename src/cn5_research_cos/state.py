@@ -34,6 +34,17 @@ class GraphState(TypedDict, total=False):
     # H6 final-review interrupt is opt-in (CLI cos run sets it); the P1 run_loop
     # (no checkpointer) leaves it False so terminal stops don't pause.
     enable_h6: bool
+    # P5: an explicit user command to emit the §22 memo even if the readiness
+    # target is not met (the readiness emission gate honors it). Default False —
+    # the normal path emits only when readiness targets are met.
+    explicit_emit: bool
     # Test-only: inject a ready-made Brains bundle (non-checkpointed path only,
     # since a Brains dataclass is not JSON-serializable). Production never sets it.
     brains: object
+    # P5b live-debate observability: an optional StageReporter the loop nodes call
+    # to stream a per-stage human-readable summary to stdout (flushed, non-tty
+    # safe). DEFAULT None/off so the existing loop tests (which never thread one)
+    # emit nothing and stay green; the CLI `cos run`/`run-auto` threads a real
+    # StageReporter(sys.stdout) when --stream (default ON). Not JSON-serializable,
+    # so it rides the non-checkpointed compile_graph() path exactly like `brains`.
+    reporter: object

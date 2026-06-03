@@ -11,8 +11,11 @@ from datetime import datetime, timezone
 import typer
 from rich.console import Console
 
+import sys
+
 from . import render
 from .graph import apply_steer, compile_with_checkpoint, run_auto
+from .observability import StageReporter
 from .models import Decision, ResearchState
 from .sot import brief as sot_brief
 from .sot import clarifier as sot_clarifier
@@ -78,6 +81,8 @@ def run(
                                 help="從上次 checkpoint 續跑（需 --run-id），不重頭跑"),
     resume_state: bool = typer.Option(False, "--resume-state",
                                       help="從已存的 state.json 起一個互動式 run（需 --run-id）"),
+    stream: bool = typer.Option(True, "--stream/--no-stream",
+                                help="即時把每個 stage 的辯論摘要（含 Albert 全文）串流到 stdout"),
 ):
     """跑研究收斂迴圈（互動式）：跑到 gate interrupt 就暫停並印 ask payload + 如何 resume。
 
@@ -158,9 +163,19 @@ def run(
                 last_decision = dec
             if rs.readiness_score is not None and rs.iteration_count != last_printed_iter:
                 console.print(render.iteration_summary(rs))
+                # P5 soft budget warning: cumulative cost/iter/calls each iteration
+                # (informational only — never auto-truncates research).
+                console.print(f"[dim]{metrics.summary_line(iteration=rs.iteration_count)}[/dim]")
                 console.print("")
                 last_printed_iter = rs.iteration_count
 
+    # P5b: stream the live adversarial debate (per-stage block incl. Albert's full
+    # output) to stdout as the loop runs. The checkpointed graph cannot carry the
+    # reporter in GraphState, so publish it on the loop's contextvar for the
+    # duration of the run. flushed + non-tty-safe → survives pipe/redirect/bg.
+    from .graph import _REPORTER_CV
+    _reporter = StageReporter(sys.stdout) if stream else None
+    _tok = _REPORTER_CV.set(_reporter) if _reporter is not None else None
     try:
         # P2 acceleration: for a real run, open ONE persistent ClaudeSession pool
         # so the cheap-LLM brains reuse a `claude` across calls (pay ~12s startup
@@ -182,6 +197,8 @@ def run(
             return
     finally:
         conn.close()
+        if _tok is not None:
+            _REPORTER_CV.reset(_tok)
 
     if final_state is None:
         console.print("[red]迴圈未產生任何狀態（resume 時可能已完成）[/red]")
@@ -273,6 +290,8 @@ def run_auto_cmd(
                                         help="證據來源：web|internal|auto|both（預設 auto）"),
     default_priority: str = typer.Option(None, "--default-priority",
                                          help="auto 模式無人時的預設研究優先序"),
+    stream: bool = typer.Option(True, "--stream/--no-stream",
+                                help="即時把每個 stage 的辯論摘要（含 Albert 全文）串流到 stdout"),
 ):
     """隔夜 AUTO 模式：低風險 gate 自動套預設、高風險硬停（可 resume）；印每輪 + 停止原因。"""
     if llm not in ("mock", "real"):
@@ -286,9 +305,13 @@ def run_auto_cmd(
     rid = run_id or "run-" + now.replace(":", "").replace("-", "")
     initial = ResearchState(run_id=rid, original_question=question,
                             mode="auto", created_at=now, updated_at=now)
+    # P5b: stream the live debate (incl. Albert's full output) to stdout as the
+    # auto loop runs — flushed + non-tty-safe (survives pipe/redirect/background).
+    _reporter = StageReporter(sys.stdout) if stream else None
     result = run_auto(initial, base_dir=base_dir, max_iterations=max_iterations,
                       now=now, llm=llm, research_source=research_source,
-                      default_priority=default_priority, run_id=rid)
+                      default_priority=default_priority, run_id=rid,
+                      reporter=_reporter)
     final = result["state"]
 
     console.rule(f"[bold]AUTO run {rid}[/bold]")
@@ -302,6 +325,12 @@ def run_auto_cmd(
         console.print("")
         console.print("最終 readiness 分數：")
         console.print(render.render_readiness(final))
+    # P5 soft budget warning: cumulative cost/iter/calls (informational only; the
+    # auto loop never auto-truncates research on budget — see spec cost-governance).
+    _metrics = result.get("metrics")
+    if _metrics is not None:
+        console.print("")
+        console.print(f"[dim]{_metrics.summary_line(iteration=final.iteration_count)}[/dim]")
 
 
 @app.command()

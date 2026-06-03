@@ -172,6 +172,11 @@ class Source(BaseModel):
     # verified, no difflib re-run). Default "web" since the web researcher is the
     # baseline path; the internal-doc path stamps "internal" explicitly.
     origin: str = "web"
+    # P5 citation verify: the verbatim surrounding text the citation verifier
+    # reads. web: the sentence(s) containing the quote (captured by the
+    # researcher); internal: the paperwork fragment quote (carried from P4a).
+    # Empty by default so existing P1-P4 Sources construct unchanged.
+    excerpt: str = ""
 
 
 class Claim(BaseModel):
@@ -235,6 +240,46 @@ class AuditResult(BaseModel):
     recommended_next_probe: str | None = None
     readiness_score_delta: int = 0
     degraded: bool = False
+
+
+# --------------------------------------------------------------------------- #
+# P5 — §22 decision-memo models
+# --------------------------------------------------------------------------- #
+class BlockerType(str, Enum):
+    """The 6 kinds a §4 blocker is labeled as (deterministic labeling)."""
+    research = "research"
+    internal_data = "internal_data"
+    permission = "permission"
+    human_judgment = "human_judgment"
+    bu_preference = "bu_preference"
+    albert_decision = "albert_decision"
+
+
+class Blocker(BaseModel):
+    """One labeled §4 blocker: what is blocking + which of the 6 kinds it is."""
+    blocker_type: BlockerType
+    description: str = ""
+    source_id: str = ""          # issue id or challenge id this blocker came from
+    owner: str | None = None     # who must unblock it (human/BU/Albert), if known
+
+
+class MemoSection(BaseModel):
+    """One §22 memo section: a stable key + a display title + LLM-written body."""
+    key: str
+    title: str
+    body: str = ""
+
+
+class Memo(BaseModel):
+    """The §22 decision-memo: the 9 sections + the emission-gate verdict."""
+    sections: list[MemoSection] = Field(default_factory=list)
+    blockers: list[Blocker] = Field(default_factory=list)
+    unverified_key_claims: list[str] = Field(default_factory=list)
+    emitted: bool = False
+    refused_reason: str | None = None
+
+    def section_keys(self) -> list[str]:
+        return [s.key for s in self.sections]
 
 
 class ResearchState(BaseModel):
