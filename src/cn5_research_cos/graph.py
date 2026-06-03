@@ -966,6 +966,7 @@ def run_auto(
     research_source: str = "web",
     default_priority: str | None = None,
     run_id: str | None = None,
+    metrics=None,
 ):
     """Overnight AUTO mode (spec §"auto mode" + Test 5).
 
@@ -984,10 +985,15 @@ def run_auto(
     payload, resumable via ``cos resume <run_id>``); False ⇒ the run reached a
     terminal/synthesize/ceiling stop (``stop_reason`` explains why).
     """
+    from .llm import sdk_client
+    from .llm.metrics import RunMetrics
+
     rid = run_id or initial.run_id
     if default_priority and not initial.default_research_priority:
         initial.default_research_priority = default_priority
     initial.mode = "auto"
+    if metrics is None:
+        metrics = RunMetrics()
 
     app, _saver, conn = compile_with_checkpoint(os.path.join(str(base_dir), rid))
     cfg = {"configurable": {"thread_id": rid}, "recursion_limit": 200}
@@ -1001,8 +1007,16 @@ def run_auto(
         "mode": "auto",
         "enable_h6": False,
     }
+
+    def _invoke_auto():
+        return app.invoke(init, config=cfg)
+
     try:
-        out = app.invoke(init, config=cfg)
+        if llm == "real":
+            with sdk_client.use_session_pool(metrics=metrics):
+                out = _invoke_auto()
+        else:
+            out = _invoke_auto()
         snap = app.get_state(cfg)
         final = snap.values["research_state"]
         interrupts = out.get("__interrupt__") if isinstance(out, dict) else None
@@ -1023,4 +1037,6 @@ def run_auto(
         "reason_kind": reason_kind,
         "stop_reason": stop_reason,
         "run_id": rid,
+        # P5 soft budget warning: cumulative cost/iter/calls (informational only).
+        "metrics": metrics,
     }

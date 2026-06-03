@@ -158,6 +158,9 @@ def run(
                 last_decision = dec
             if rs.readiness_score is not None and rs.iteration_count != last_printed_iter:
                 console.print(render.iteration_summary(rs))
+                # P5 soft budget warning: cumulative cost/iter/calls each iteration
+                # (informational only — never auto-truncates research).
+                console.print(f"[dim]{metrics.summary_line(iteration=rs.iteration_count)}[/dim]")
                 console.print("")
                 last_printed_iter = rs.iteration_count
 
@@ -302,6 +305,12 @@ def run_auto_cmd(
         console.print("")
         console.print("最終 readiness 分數：")
         console.print(render.render_readiness(final))
+    # P5 soft budget warning: cumulative cost/iter/calls (informational only; the
+    # auto loop never auto-truncates research on budget — see spec cost-governance).
+    _metrics = result.get("metrics")
+    if _metrics is not None:
+        console.print("")
+        console.print(f"[dim]{_metrics.summary_line(iteration=final.iteration_count)}[/dim]")
 
 
 @app.command()

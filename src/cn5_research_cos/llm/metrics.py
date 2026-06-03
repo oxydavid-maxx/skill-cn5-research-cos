@@ -38,10 +38,18 @@ class RunMetrics:
             self.input_tokens += int(usage.get("input_tokens", 0) or 0)
             self.output_tokens += int(usage.get("output_tokens", 0) or 0)
 
-    def summary_line(self) -> str:
-        """One-line cost/latency/calls summary for `cos run`."""
+    def summary_line(self, iteration: int | None = None) -> str:
+        """One-line cumulative cost/iter/calls summary (the P5 SOFT budget warning).
+
+        Informational ONLY — the loop NEVER auto-truncates research on budget (no
+        hard cap, per the spec's cost-governance decision). When ``iteration`` is
+        supplied an ``iter=Y`` token is included so the operator can watch
+        cost-per-iteration and interrupt manually if needed.
+        """
+        iter_tok = f"iter={iteration} " if iteration is not None else ""
         return (
             f"cost=${self.total_usd:.2f} "
+            f"{iter_tok}"
             f"latency={self.wall_clock_s:.1f}s "
             f"calls={self.calls}"
         )
