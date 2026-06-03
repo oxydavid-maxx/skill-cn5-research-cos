@@ -105,6 +105,8 @@ def run(
     llm: str = typer.Option("mock", "--llm"),
     research_source: str = typer.Option("auto", "--research-source",
                                         help="證據來源：web|internal|auto|both（預設 auto）"),
+    albert: str = typer.Option("sim", "--albert",
+                               help="Albert 審稿來源：sim（模擬器，預設）|real（真實外部 Albert，需 --llm real + ALBERT_HOME）"),
     resume: bool = typer.Option(False, "--resume",
                                 help="從上次 checkpoint 續跑（需 --run-id），不重頭跑"),
     resume_state: bool = typer.Option(False, "--resume-state",
@@ -123,6 +125,12 @@ def run(
         raise typer.Exit(code=2)
     if research_source not in ("web", "internal", "auto", "both"):
         console.print(f"[red]--research-source 僅支援 web|internal|auto|both；收到 {research_source!r}[/red]")
+        raise typer.Exit(code=2)
+    if albert not in ("sim", "real"):
+        console.print(f"[red]--albert 僅支援 sim|real；收到 {albert!r}[/red]")
+        raise typer.Exit(code=2)
+    if albert == "real" and llm != "real":
+        console.print("[red]--albert real 需要 --llm real（真實 brain stack）[/red]")
         raise typer.Exit(code=2)
 
     # P5d guarantee #3: refuse to run when the live debate would be ACCIDENTALLY
@@ -162,7 +170,7 @@ def run(
         stream_input: GraphState | None = {
             "research_state": initial, "base_dir": base_dir, "now": now,
             "max_iterations": max_iterations, "llm": llm,
-            "research_source": research_source,
+            "research_source": research_source, "albert": albert,
             "mode": "interactive", "enable_h6": True,
         }
     else:
@@ -177,7 +185,7 @@ def run(
         stream_input: GraphState | None = {
             "research_state": initial, "base_dir": base_dir, "now": now,
             "max_iterations": max_iterations, "llm": llm,
-            "research_source": research_source,
+            "research_source": research_source, "albert": albert,
             "mode": "interactive", "enable_h6": True,
         }
 
@@ -329,6 +337,8 @@ def run_auto_cmd(
     llm: str = typer.Option("mock", "--llm"),
     research_source: str = typer.Option("auto", "--research-source",
                                         help="證據來源：web|internal|auto|both（預設 auto）"),
+    albert: str = typer.Option("sim", "--albert",
+                               help="Albert 審稿來源：sim（模擬器，預設）|real（真實外部 Albert，需 --llm real + ALBERT_HOME）"),
     default_priority: str = typer.Option(None, "--default-priority",
                                          help="auto 模式無人時的預設研究優先序"),
     stream: bool = typer.Option(True, "--stream/--no-stream",
@@ -342,6 +352,12 @@ def run_auto_cmd(
         raise typer.Exit(code=2)
     if research_source not in ("web", "internal", "auto", "both"):
         console.print(f"[red]--research-source 僅支援 web|internal|auto|both；收到 {research_source!r}[/red]")
+        raise typer.Exit(code=2)
+    if albert not in ("sim", "real"):
+        console.print(f"[red]--albert 僅支援 sim|real；收到 {albert!r}[/red]")
+        raise typer.Exit(code=2)
+    if albert == "real" and llm != "real":
+        console.print("[red]--albert real 需要 --llm real（真實 brain stack）[/red]")
         raise typer.Exit(code=2)
     # P5d guarantee #3: refuse if the live debate would be ACCIDENTALLY hidden.
     if _refuse_if_hidden_or_exit(allow_redirect):
@@ -358,7 +374,7 @@ def run_auto_cmd(
     _reporter = StageReporter(sys.stdout, run_dir=_run_dir_for(base_dir, rid)) if stream else None
     result = run_auto(initial, base_dir=base_dir, max_iterations=max_iterations,
                       now=now, llm=llm, research_source=research_source,
-                      default_priority=default_priority, run_id=rid,
+                      albert=albert, default_priority=default_priority, run_id=rid,
                       reporter=_reporter)
     final = result["state"]
 

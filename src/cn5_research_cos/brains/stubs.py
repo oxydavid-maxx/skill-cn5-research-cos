@@ -230,7 +230,40 @@ def _apply_research_source(brains: Brains, research_source: str) -> Brains:
     return brains
 
 
-def build_brains(llm: str = "mock", *, research_source: str = "web") -> Brains:
+def _build_real_albert_auditors(work_dir: str = "."):
+    """Resolve the real-Albert sentinel + deep auditor for ``--albert real``.
+
+    The sentinel runs per-iteration at the ``flash`` tier — BUT ``--flash`` is a
+    capability the external Albert may not expose yet. We probe it ONCE: if absent
+    we fall back to the cheap simulator at the sentinel tier and LOG it (the run
+    does NOT fail). The deep auditor always uses the real Albert (gate stage).
+
+    Returns ``(sentinel, deep_base)`` where ``deep_base`` is the un-wrapped deep
+    auditor (the caller tier-tags it via ``build_auditor``).
+    """
+    import sys
+    from ..albert import locate, probe
+    from ..albert.real_adapter import RealAlbert
+    from ..albert.simulator import RealAlbertSimulator
+
+    home = locate.find_albert_home()
+    deep_base = RealAlbert(work_dir=work_dir, stage="final")
+    if home is None:
+        # Home absent: still wire RealAlbert so the audit DEGRADES VISIBLY at call
+        # time (decision #8) rather than silently using the simulator.
+        return RealAlbert(work_dir=work_dir, stage="sentinel"), deep_base
+    if probe.albert_supports_flash(home):
+        return RealAlbert(work_dir=work_dir, stage="sentinel"), deep_base
+    sys.stderr.write(
+        f"[build_brains] Albert at {home} has no --flash; per-iteration sentinel "
+        "falls back to the cheap simulator (deep-audit gates still use real Albert)\n"
+    )
+    sys.stderr.flush()
+    return RealAlbertSimulator(), deep_base
+
+
+def build_brains(llm: str = "mock", *, research_source: str = "web",
+                 albert: str = "sim") -> Brains:
     """Brain-bundle factory (injection hook).
 
     - ``"mock"`` -> P1 deterministic stubs (the 33 tests stay green).
@@ -241,7 +274,18 @@ def build_brains(llm: str = "mock", *, research_source: str = "web") -> Brains:
     in a RoutingResearcher that dispatches to the InternalDocResearcher per
     issue. The graph topology + all loop/COS control are identical for all;
     only the researcher node differs.
+
+    ``albert`` (P6) selects the auditor brain for ``llm="real"``: ``"sim"``
+    (default) keeps RealAlbertSimulator so the 391 prior tests stay green;
+    ``"real"`` wires the real external Albert via subprocess (``RealAlbert``)
+    at the same Auditor seam, with a one-time ``--flash`` capability probe and a
+    visible degrade when ALBERT_HOME is absent. ``albert="real"`` requires
+    ``llm="real"`` (the real brain stack).
     """
+    if albert not in ("sim", "real"):
+        raise ValueError(f"Unknown albert={albert!r}; expected 'sim' or 'real'.")
+    if albert == "real" and llm != "real":
+        raise ValueError("--albert real requires --llm real (the real brain stack).")
     if llm == "mock":
         return _apply_research_source(build_mock_brains(), research_source)
     if llm == "real":
@@ -253,7 +297,10 @@ def build_brains(llm: str = "mock", *, research_source: str = "web") -> Brains:
         from ..albert.simulator import RealAlbertSimulator
         from .auditor_tier import build_auditor
 
-        sentinel = RealAlbertSimulator()
+        if albert == "real":
+            sentinel, deep_base = _build_real_albert_auditors()
+        else:
+            sentinel, deep_base = RealAlbertSimulator(), RealAlbertSimulator()
         real = Brains(
             # control-plane / not-yet-real-in-P2b nodes reuse the deterministic
             # implementations (clarify interrupt = P3; brief = SOT/P2a front-end;
@@ -269,9 +316,10 @@ def build_brains(llm: str = "mock", *, research_source: str = "web") -> Brains:
             skeptic=RealSkeptic(),
             auditor=sentinel,
             scorer=RealScorer(),
-            # Tier 2 deep auditor: in P3 still the SAME simulator class, tier-
-            # tagged via the seam (real Albert FSM = P6 swaps `base`/`model`).
-            deep_auditor=build_auditor(tier="deep", base=RealAlbertSimulator()),
+            # Tier 2 deep auditor: tier-tagged via the seam. P6 swaps `base` to the
+            # real Albert (gate stage) when --albert real; --albert sim keeps the
+            # simulator (the 391 prior tests stay green).
+            deep_auditor=build_auditor(tier="deep", base=deep_base),
             # P5 synthesis brain — real narrow LLM (one structured haiku call).
             synthesizer=RealSynthesizer(),
         )
