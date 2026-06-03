@@ -388,11 +388,30 @@ def node_research_fanout(state: GraphState) -> GraphState:
     return {"worker_results": [b.model_dump() for b in bundles]}
 
 
+def _persist_ai_sources(rs: ResearchState, bundle: EvidenceBundle, base_dir) -> None:
+    """Component B: save each source in ``bundle`` as a durable note in the
+    per-topic reference store, and pre-mark its dedup key processed so the same-run
+    scan does not re-ingest it (it is already web evidence this run). Best-effort:
+    a write failure must never break the loop."""
+    try:
+        from .brains.reference_store import save_source_note
+        from .brains.internal_doc import _dedup_key
+        for src in bundle.sources:
+            note_path = save_source_note(rs, src, base_dir=str(base_dir))
+            key = _dedup_key(note_path)
+            if key not in rs.processed_references:
+                rs.processed_references.append(key)
+    except Exception:  # noqa: BLE001 - reference-store write must never crash the loop
+        logger.warning("AI-source reference-store write failed; loop continues",
+                       exc_info=True)
+
+
 def node_collect(state: GraphState) -> GraphState:
     """Fold worker_results into research_state.evidence and advance issue status."""
     rs = state["research_state"]
     now = state.get("now", "t")
     prereqs = dict(state.get("prereqs", {}))
+    base_dir = state.get("base_dir", "runs")
     for raw in state.get("worker_results", []):
         bundle = EvidenceBundle.model_validate(raw)
         rs.evidence.append(bundle)
@@ -406,11 +425,16 @@ def node_collect(state: GraphState) -> GraphState:
                 issue_map.set_status(rs, iid, IssueStatus.answered, now=now)
                 node.confidence = 4
             node.evidence_refs.append(bundle.query)
+        # Component B: persist each AI-collected source as a durable note in the
+        # per-topic reference store (reference/sources/<sid>.md). The source is
+        # ALREADY web evidence this run, so pre-mark its note's dedup key processed
+        # so the same-run scan does not re-ingest it as internal evidence; a future
+        # RE-RUN (fresh processed_references) accumulates it from the store.
+        _persist_ai_sources(rs, bundle, base_dir)
     # P5c: scan the per-run reference drop folder for NEW human-supplied documents
     # (PDF/Word/PPT/Excel/HTML/Markdown), convert + fold them into evidence as
     # internal-origin bundles. Dedup by name+mtime so each file is processed once.
     # Best-effort: a scan failure must never break the loop (observability/intake).
-    base_dir = state.get("base_dir", "runs")
     try:
         from .brains.internal_doc import scan_reference_folder
         for ref_bundle in scan_reference_folder(rs, base_dir=str(base_dir)):
@@ -1075,13 +1099,27 @@ def run_loop(
 # --------------------------------------------------------------------------- #
 # P3 auto mode + H4 steering
 # --------------------------------------------------------------------------- #
-def apply_steer(rs: ResearchState, text: str, *, now: str = "t") -> dict:
+def apply_steer(rs: ResearchState, text: str, *, now: str = "t",
+                base_dir: str | None = None) -> dict:
     """Append an H4 ``steer`` event to the (checkpointed) state. The next
     iteration's ``node_supervisor`` consumes it and re-ranks toward the steered
-    direction. Returns the appended event."""
+    direction. Returns the appended event.
+
+    Component B: a steer answer is ALSO a human contribution to the per-topic
+    reference store — when ``base_dir`` is supplied, the answer is written as a
+    dated note (``reference/steer/<date>.md``) so ``scan_reference_folder`` picks
+    it up as durable material, not just a transient steering_event. Best-effort:
+    a write failure never blocks the steer."""
     ev = {"kind": "steer", "text": text, "at": now, "consumed": False}
     rs.steering_events.append(ev)
     rs.updated_at = now
+    if base_dir is not None:
+        try:
+            from .brains.reference_store import save_steer_note
+            save_steer_note(rs, text, base_dir=str(base_dir), now=now)
+        except Exception:  # noqa: BLE001 - reference-store write must never block steer
+            logger.warning("steer reference-store write failed; steer applied",
+                           exc_info=True)
     return ev
 
 
