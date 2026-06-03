@@ -30,9 +30,10 @@ from langgraph.types import interrupt
 from .artifacts import issue_map
 from .brains import build_brains
 from .llm import sdk_client
-from .decision import anti_premature, branch_budget, exhaustion, gate, risk
-from .models import (Decision, EvidenceBundle, HumanTask, HumanTaskStatus,
-                     IssueStatus, IssueType, ResearchState)
+from .decision import (anti_premature, branch_budget, convergence, exhaustion,
+                       gate, risk)
+from .models import (ChallengeStatus, Decision, EvidenceBundle, HumanTask,
+                     HumanTaskStatus, IssueStatus, IssueType, ResearchState)
 from .state import GraphState
 from .store import save_snapshot
 
@@ -89,7 +90,15 @@ def select_research_issues(state: ResearchState, brains, k: int | None = None) -
     raw_ids = list(brains.supervisor.select(state))
     seen = set(state.researched_queries)
 
-    candidates: list[tuple[int, str]] = []
+    # P4b convergence: issues that ANSWER an open Albert challenge get priority —
+    # the COS directs next-round research at the open challenges first.
+    from .decision import convergence
+    issues_with_open_challenge = {
+        c.issue_id for c in convergence.unresolved_challenges(state)
+        if c.issue_id is not None
+    }
+
+    candidates: list[tuple[int, int, str]] = []
     for iid in raw_ids:
         node = state.issue_map.get(iid)
         if node is None:
@@ -99,12 +108,13 @@ def select_research_issues(state: ResearchState, brains, k: int | None = None) -
         query = node.title
         if query in seen:
             continue
-        candidates.append((node.impact, iid))
+        has_challenge = 1 if iid in issues_with_open_challenge else 0
+        candidates.append((has_challenge, node.impact, iid))
 
-    # Stable sort by impact descending (Python sort is stable, so ties keep the
-    # supervisor's original order).
-    candidates.sort(key=lambda t: t[0], reverse=True)
-    selected = [iid for _impact, iid in candidates[:cap]]
+    # Stable sort: open-challenge-linked issues first, then impact descending
+    # (Python sort is stable, so ties keep the supervisor's original order).
+    candidates.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    selected = [iid for _hc, _impact, iid in candidates[:cap]]
 
     for iid in selected:
         q = state.issue_map[iid].title
@@ -306,6 +316,11 @@ def run_research_fanout(rs: ResearchState, selected: list[str], brains, *,
     for bundle in raw_bundles:
         try:
             bundle = brains.source_critic.review(bundle)
+            # P4b Component 2: two-altitude source ranking AFTER research/critique,
+            # BEFORE compress — heuristic dedup/junk/top-k (+ opt-in LLM curator),
+            # re-pruning claim refs to surviving sources.
+            from .ranking import pipeline as _ranking
+            bundle = _ranking.apply(bundle)
             bundle = brains.compressor.compress(bundle)
         except Exception:  # noqa: BLE001 - one bad critique never kills the batch
             continue
@@ -369,14 +384,27 @@ def node_albert_audit(state: GraphState) -> GraphState:
     now = state.get("now", "t")
     audit = _brains(state).auditor.audit(rs)
     rs.last_audit = audit
-    # Record challenges into the challenge map.
+    # Record challenges into the challenge map via UPSERT (P4b convergence): a
+    # re-raised challenge MERGES onto its prior id (status/current_answer/evidence/
+    # rounds_seen) instead of minting a duplicate, so the adversarial dialogue
+    # carries forward and can converge.
     from .artifacts import challenge_map
+    from .decision import convergence
     for ch in audit.challenges:
-        challenge_map.add(
+        merged = challenge_map.upsert(
             rs, challenge=ch.challenge,
-            why_albert_would_ask=ch.why_albert_would_ask,
+            why_albert_would_ask=ch.why_albert_would_ask or None,
+            current_answer=ch.current_answer or None,
             status=ch.status, classification=ch.classification,
+            confidence=ch.confidence or None,
+            evidence_refs=list(ch.evidence_refs) or None,
+            issue_id=ch.issue_id,
         )
+        # An answered challenge backed by evidence is CONVERGED -> resolved (the
+        # loop's deterministic promotion; the auditor only marks 'answered').
+        if (merged.status == ChallengeStatus.answered and merged.evidence_refs):
+            merged.status = ChallengeStatus.resolved
+    convergence.record_signal(rs)
     for n in rs.issue_map.values():
         n.last_audited = now
     prereqs["albert_audit_ran"] = True
@@ -408,6 +436,11 @@ def node_artifact_update(state: GraphState) -> GraphState:
 def node_readiness_scoring(state: GraphState) -> GraphState:
     rs = state["research_state"]
     score = _brains(state).scorer.score(rs)
+    # P4b: override the advisory albert_challenge_readiness with the DETERMINISTIC
+    # resolved-vs-open ratio from the challenge map (the loop's stop control reads
+    # this axis), so readiness honestly reflects convergence.
+    if rs.albert_challenge_map:
+        score.albert_challenge_readiness = convergence.albert_challenge_readiness(rs)
     rs.readiness_score = score
     s = (score.albert_challenge_readiness + score.decision_readiness
          + score.research_exhaustion_readiness + score.human_bottleneck_clarity)
@@ -665,6 +698,9 @@ def node_cos_decision(state: GraphState) -> GraphState:
     # Stage 3: exhaustion / terminal eligibility (ANDed with prereqs).
     if exhaustion.terminal_eligible(rs, flags=prereqs):
         decision = gate.assert_audit_ran(rs, Decision.terminal_stop)
+        # P4b: also REFUSE if a high-impact Albert challenge is still unresolved
+        # (the adversarial loop has not converged) — force back to research.
+        decision = convergence.gate_emission(rs, decision)
         return {"research_state": rs, "last_decision": decision, "branch_budget": budget}
 
     # Stage 4: auditor recommends synthesize (addressable saturated, residual remains)
@@ -672,6 +708,7 @@ def node_cos_decision(state: GraphState) -> GraphState:
     if (audit is not None and audit.recommended_next_action == Decision.synthesize) \
             or exhaustion.plateau(rs, window=2):
         decision = gate.assert_audit_ran(rs, Decision.synthesize)
+        decision = convergence.gate_emission(rs, decision)
         return {"research_state": rs, "last_decision": decision, "branch_budget": budget}
 
     # Stage 5: residual-only with explicit blockers but targets unmet → push_human,

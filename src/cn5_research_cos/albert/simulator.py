@@ -13,6 +13,7 @@ SAME `to_audit_result` contract — the graph does not change.
 """
 from __future__ import annotations
 
+from ..decision import convergence
 from ..llm import sdk_client
 from ..models import AuditResult, ResearchState
 from .contract import to_audit_result
@@ -83,16 +84,41 @@ _SYSTEM = (
 )
 
 
+def _open_challenges_block(state: ResearchState) -> str:
+    """Render the current UNRESOLVED challenges (id + current answer + evidence)
+    so Albert can RESOLVE answered ones, ESCALATE still-unanswered ones, and
+    reference an existing id instead of re-raising it verbatim (P4b convergence)."""
+    live = convergence.unresolved_challenges(state)
+    if not live:
+        return "(none — no prior open challenges)"
+    lines = []
+    for c in live:
+        ans = c.current_answer.strip() or "(unanswered)"
+        refs = ", ".join(c.evidence_refs) or "(no evidence yet)"
+        lines.append(
+            f"- [{c.id}] {c.challenge}\n    current_answer: {ans}\n    evidence: {refs}"
+        )
+    return "\n".join(lines)
+
+
 def _user_prompt(state: ResearchState) -> str:
     draft = state.research_brief or state.final_memo or "(no draft yet)"
     issues = "; ".join(
         f"{n.title} [{n.status.value}]" for n in list(state.issue_map.values())[:12]
     ) or "(none)"
+    open_challenges = _open_challenges_block(state)
     return (
         f"ORIGINAL QUESTION:\n{state.original_question}\n\n"
         f"CURRENT DRAFT / ANSWER:\n{draft}\n\n"
         f"OPEN ISSUES:\n{issues}\n\n"
-        "Audit this answer as Albert. If the draft leans on 'human-in-the-loop', "
+        f"PRIOR OPEN CHALLENGES (carry the dialogue forward — do NOT re-raise "
+        f"these verbatim):\n{open_challenges}\n\n"
+        "For each PRIOR OPEN CHALLENGE: if the current_answer + evidence now "
+        "satisfy it, mark it status='answered' (the loop promotes it to resolved); "
+        "if it still cannot be answered by research and is decision-critical, "
+        "escalate it (needs_bu_judgment / needs_albert_decision); otherwise restate "
+        "it by REFERENCING ITS ID, never as a new verbatim challenge.\n\n"
+        "Then audit this answer as Albert. If the draft leans on 'human-in-the-loop', "
         "challenge specifically: (1) why can't the AI ask all clarifying questions "
         "upfront and then run overnight unattended; (2) which parts TRULY require a "
         "human vs. which are automatable now; (3) whether HITL is being used as an "

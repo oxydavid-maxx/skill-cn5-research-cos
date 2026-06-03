@@ -141,6 +141,7 @@ def bundle_from_survey(folder: Path | str, *, issue_id: str | None,
                 title=f"{title} — {sec.get('title', sec_id)}",
                 url=locator,
                 source_type=stype,
+                origin="internal",
             )
             sources.append(src)
 
@@ -181,6 +182,7 @@ def record_from_fragment(*, reference_id: str, title: str, role: str,
         title=title,
         url=locator,
         source_type=role_to_source_type(role),
+        origin="internal",
     )
     claims: list[Claim] = []
     gaps: list[str] = []

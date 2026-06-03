@@ -68,6 +68,8 @@ P2 is **split into two independent phases P2a + P2b** (P3–P6 numbering UNCHANG
 
 ## P4 — Real research workers + source ranking + internal-document adapter
 
+> **STATUS 2026-06-03:** SPLIT into **P4a (internal-document via paperwork scripts-as-toolbox)** and **P4b (convergence + source ranking + citation discipline)** — both BUILT + merged (P4a) / on branch (P4b), all tests green. Detailed specs: `docs/spec/2026-06-02-phase4a-internal-document-design.md`, `docs/spec/2026-06-03-phase4b-convergence-ranking-citation-design.md`. **One open caveat carried to P5:** P4b's citation modules (`citation/verify|policy`, `flatten_to_primary`) are built + unit-tested but **NOT yet wired into the live loop** (need web source-text capture + P5 memo assembly — see the P5 forward-deps block). Convergence `gate_emission` + two-altitude ranking ARE live. paperwork is a gerrit `CN5_PAPERWORK_HOME` dependency (scripts only, never vendored; v7.0.1+ `docling-strict` → fragments use `--backend docling`).
+
 **Goal:** the research node gets real data via pluggable, hot-swappable adapters, and source/citation discipline becomes enforced.
 
 **What becomes real:**
@@ -92,7 +94,13 @@ P2 is **split into two independent phases P2a + P2b** (P3–P6 numbering UNCHANG
 - **Final memo (§22)** sections (Executive Answer / Albert Challenge Map / What We Can/Cannot Say / What Is Blocking Us / Required Human Decisions-Inputs / Evidence Summary / Risks & Assumptions / Recommended Next Action / Appendix); memo must label each blocker type (research / internal-data / permission / human-judgment / BU-preference / Albert-decision).
 - **Emission gate enforced (decision #8):** memo produced ONLY when readiness target met (or explicit user command), AND the Albert audit genuinely ran (not degraded). **H6 final-review** human gate before "Done".
 
-**DoD / verify:** memo only at readiness or explicit command; §22 sections all present; blocker types labeled; emission gate refuses a memo on a degraded audit (tested); H6 review gate present.
+**⚠️ P5 CARRIES FORWARD DEPENDENCIES from P4a/P4b (recorded so they are not forgotten):**
+- **REUSE paperwork `research-synthesis` for document-grounded sections** (Evidence Summary / §4 findings): it already emits a 5-section cited topic-report (every claim `[[ref-id,§N]]`) + `quality-gate` citation checks. Do NOT re-write a cited-synthesis for doc claims. P5 WRAPS it with web findings + Albert Challenge Map + blockers + Required-Human-Decisions + decision-memo format (§22) — the parts paperwork lacks. (Mirrors P4a scripts-as-toolbox division of labor.)
+- **WIRE IN the P4b citation modules** (`citation/verify.py`, `citation/policy.py`, `flatten_to_primary`): they are BUILT + unit-tested in P4b but **NOT yet called in the live loop** (deferred here by design). P5 memo assembly is where they plug in (`policy.gate_emission` + `flatten_to_primary` on memo claims; web-claim verbatim verify).
+- **P5 PREREQUISITE:** the web researcher schema must CAPTURE source full-text (it currently does not) so `citation/verify.py`'s web verbatim-≥0.85 difflib check has text to verify against. (Internal-doc claims are already paperwork-verified — no difflib.)
+- **Already live (no action):** `convergence.gate_emission` (refuses memo while high-impact challenges unresolved) wired from P4b; two-altitude ranking runs before compress from P4b.
+
+**DoD / verify:** memo only at readiness or explicit command; §22 sections all present; blocker types labeled; emission gate refuses a memo on a degraded audit (tested) AND while high-impact Albert challenges unresolved (convergence gate) AND while a KEY claim is unverified (citation gate); doc-grounded sections via paperwork `research-synthesis` (not re-invented); H6 review gate present. **First run of the standing TC4 baseline** (`docs/poc/tc4-partial-reset-reference.md`) happens after P5.
 
 **Out of scope (still):** enterprise UI, Slack/Teams, multi-BU memory (§23 not-yet list).
 
@@ -104,7 +112,12 @@ P2 is **split into two independent phases P2a + P2b** (P3–P6 numbering UNCHANG
 
 **Scope:** richer Albert (challenge patterns / personalization HOOKS per §29 — NOT personalized training in MVP); guardrail hardening; packaging decision (O-3: does this become an installed Claude Code skill?); examples/docs; performance (LangGraph PostgresSaver if SqliteSaver write-throughput bottlenecks under concurrency — per 2026 production guidance); reference-monitoring.
 
-**DoD / verify:** richer Albert audit demonstrably catches more; e2e hardened; ship-ready; packaging resolved.
+**⚠️ P6 CARRIES FORWARD DEPENDENCIES from P3/P4 (recorded so they are not forgotten):**
+- **Swap the Albert SIMULATOR for the real external skill** `skill-cn5-i-am-albert` behind the frozen `to_audit_result` contract — and it must feed the P4b **convergence engine** (prior open challenges in, resolved/escalated out, dedup/merge). The real Albert is what the convergence loop was built to converge against.
+- **Audit tiering full model-cascade** (deferred from P3 by evidence): only escalate Sonnet→Opus→real-Albert if the cheap sentinel demonstrably MISSES what real Albert catches; `build_auditor(tier, model)` seam already exists.
+- **paperwork version-contract hardening:** pin/verify the gerrit `CN5_PAPERWORK_HOME` dependency (v7.x `docling-strict`); preflight version check + the visible degrade-to-web-only path (P4a) are the seam.
+
+**DoD / verify:** richer Albert audit demonstrably catches more; real Albert drives the convergence loop end-to-end; e2e hardened; ship-ready; packaging resolved.
 
 ---
 
