@@ -114,7 +114,8 @@ P2 is **split into two independent phases P2a + P2b** (P3–P6 numbering UNCHANG
 
 **⚠️ P6 CARRIES FORWARD DEPENDENCIES from P3/P4 (recorded so they are not forgotten):**
 - **Swap the Albert SIMULATOR for the real external skill** `skill-cn5-i-am-albert` behind the frozen `to_audit_result` contract — and it must feed the P4b **convergence engine** (prior open challenges in, resolved/escalated out, dedup/merge). The real Albert is what the convergence loop was built to converge against.
-- **Audit tiering full model-cascade** (deferred from P3 by evidence): only escalate Sonnet→Opus→real-Albert if the cheap sentinel demonstrably MISSES what real Albert catches; `build_auditor(tier, model)` seam already exists.
+- **Albert FAST MODE (~5min) — decided 2026-06-03 (user adds it to the Albert skill):** real Albert gets a ~5-min fast mode, so it is cheap enough to **run liberally — just use real Albert, do NOT over-gate it / do NOT replace it with cheap-sentinel-only.** This RELAXES the P3 audit-tiering assumption: fast-Albert can run per-iteration (or near it); the cheap-haiku-sentinel may be reduced or dropped once fast-Albert is in. `build_auditor(tier, model)` seam supports running fast-Albert as the default tier + deep-Albert at gates. (Cost measured 2026-06-03: loop is ~$1/iter; the late-drift sacrifice of gating disappears with a 5-min Albert.)
+- **Audit tiering full model-cascade** (deferred from P3 by evidence): only escalate to a deeper/slower Albert pass if fast-Albert demonstrably MISSES things; `build_auditor(tier, model)` seam already exists.
 - **paperwork version-contract hardening:** pin/verify the gerrit `CN5_PAPERWORK_HOME` dependency (v7.x `docling-strict`); preflight version check + the visible degrade-to-web-only path (P4a) are the seam.
 
 **DoD / verify:** richer Albert audit demonstrably catches more; real Albert drives the convergence loop end-to-end; e2e hardened; ship-ready; packaging resolved.

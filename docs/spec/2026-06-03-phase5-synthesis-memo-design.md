@@ -43,7 +43,14 @@ All gates deterministic; each independently testable (refuses when its condition
 - **Baseline:** after P5 merges, run the **TC4 partial-reset baseline** end-to-end (web + internal-doc TC4 UM via P4a + Albert convergence + memo) and log the run against `docs/poc/tc4-partial-reset-reference.md` (what it reached/challenged/missed).
 - Committed; push on user confirmation.
 
+## Cost governance (measured-justified, deliberately MINIMAL)
+Cost was MEASURED 2026-06-03 (instrumented real loop on the TC4 question, web-only, 1 iteration): **$1.04 / 11 calls / ~11.5 min / input≈free (prompt caching) / output 35.8k tokens**. Conclusion: per-iteration cost is already near the floor (haiku everywhere + incremental top-K + caching). The expense of a HARD question is the iteration COUNT, which is intrinsic to honest audit-driven research. So P5 adds ONE low-sacrifice cost control and deliberately SKIPS the rest:
+- **ADD — soft budget warning (not a hard cap):** auto/loop prints cumulative `cost=$X / iter=Y / calls=Z` (from `RunMetrics`) each iteration so the operator can interrupt; it NEVER auto-truncates research. (Hard cap was rejected — it sacrifices completeness on hard questions / fights anti-premature-end.)
+- **SKIP (premature optimization, real sacrifices, no measured need):** cross-run WebSearch caching (sacrifices freshness — silent-staleness anti-pattern for a market/competitor cockpit), hard iteration/budget cap (sacrifices completeness), grounded decomposition B3 (a bet, adds complexity). Revisit only if a real cost pain appears in data.
+- **Albert (P6 decision 2026-06-03):** real Albert gets a ~5-min FAST MODE → run it liberally, do NOT over-gate / do NOT keep cheap-sentinel-only. Recorded in the P6 forward-deps of `phases-P2-P6-spec.md`.
+
 ## Out of scope
 - paperwork research-synthesis skill / quality-gate (decided: cockpit-specific memo + our own citation validation).
 - Real external Albert skill (P6); richer Albert / packaging / hardening (P6).
+- Cross-run caching / hard budget cap / B3 grounded decomposition (premature — see Cost governance).
 - Enterprise UI, Slack/Teams, multi-BU memory (§23 not-yet).
