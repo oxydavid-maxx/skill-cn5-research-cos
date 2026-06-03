@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
 import os
 import sqlite3
 from pathlib import Path
@@ -39,6 +40,8 @@ from .notify import notify_supplement_needed
 from .observability import reporter as _obs
 from .state import GraphState
 from .store import save_snapshot
+
+logger = logging.getLogger("cn5_research_cos.graph")
 
 # Two-level caps + branch budget seed.
 DEFAULT_BREADTH = 4
@@ -401,6 +404,17 @@ def node_collect(state: GraphState) -> GraphState:
                 issue_map.set_status(rs, iid, IssueStatus.answered, now=now)
                 node.confidence = 4
             node.evidence_refs.append(bundle.query)
+    # P5c: scan the per-run reference drop folder for NEW human-supplied documents
+    # (PDF/Word/PPT/Excel/HTML/Markdown), convert + fold them into evidence as
+    # internal-origin bundles. Dedup by name+mtime so each file is processed once.
+    # Best-effort: a scan failure must never break the loop (observability/intake).
+    base_dir = state.get("base_dir", "runs")
+    try:
+        from .brains.internal_doc import scan_reference_folder
+        for ref_bundle in scan_reference_folder(rs, base_dir=str(base_dir)):
+            rs.evidence.append(ref_bundle)
+    except Exception:  # noqa: BLE001 - reference intake must never crash the loop
+        logger.warning("reference-folder scan failed; loop continues", exc_info=True)
     prereqs["source_confidence_checked"] = True
     _report(state, "research", _obs.render_research, rs)
     return {"research_state": rs, "prereqs": prereqs, "worker_results": []}

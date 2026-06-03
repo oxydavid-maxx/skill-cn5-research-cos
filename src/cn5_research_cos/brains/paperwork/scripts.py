@@ -117,6 +117,27 @@ def extract_pages(home: Path | str, pdf: Path | str, pages: str,
     return out_path
 
 
+def html2md(home: Path | str, html: Path | str,
+            out: Path | str | None = None) -> str:
+    """Convert an HTML file to markdown via paperwork's ``html2md.py``.
+
+    Writes to ``out`` (a temp file if not given) and returns the markdown text.
+    Raises ``PaperworkScriptError`` on a non-zero exit (a loud tool failure).
+    """
+    import tempfile
+    html_path = Path(html)
+    if out is None:
+        out_path = Path(tempfile.gettempdir()) / f"{html_path.stem}.cn5html.md"
+    else:
+        out_path = Path(out)
+    cmd = [
+        sys.executable, _script_path(home, "html2md.py"), str(html_path),
+        "-o", str(out_path),
+    ]
+    _run(cmd)
+    return out_path.read_text(encoding="utf-8") if out_path.is_file() else ""
+
+
 def pdf2md(home: Path | str, subset_pdf: Path | str, out: Path | str,
            *, backend: str = "docling", seconds_per_page: float | None = None) -> Path:
     """Convert a (subset) PDF to markdown via ``backend`` into ``out``.

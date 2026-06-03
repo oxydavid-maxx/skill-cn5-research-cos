@@ -330,6 +330,11 @@ class ResearchState(BaseModel):
     # (P2 acceleration). A list (not set) for JSON round-trip; order-insensitive.
     researched_queries: list[str] = Field(default_factory=list)
 
+    # P5c multi-format reference intake: per-run dedup keys ("<name>::<mtime_ns>")
+    # for files already converted from runs/<run_id>/reference/, so each dropped
+    # file is processed once even if the folder is re-scanned every iteration.
+    processed_references: list[str] = Field(default_factory=list)
+
     # output
     final_memo: str | None = None
     created_at: str | None = None
