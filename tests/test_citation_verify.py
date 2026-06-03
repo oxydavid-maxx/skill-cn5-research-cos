@@ -42,6 +42,51 @@ def test_quote_empty_does_not_match():
 
 
 # --------------------------------------------------------------------------- #
+# substring / partial-match metric (P5c fix): verify = "is the quote (near-)
+# PRESENT in the source text", measured as quote-COVERAGE of the longest
+# contiguous match — NOT the full-string difflib ratio (which penalizes a short
+# verbatim quote embedded in a much longer source).
+# --------------------------------------------------------------------------- #
+def test_short_quote_inside_long_source_verifies():
+    """A short verbatim quote that IS a contiguous substring of a much longer
+    source text must verify. This FAILS under a full-string ratio (the length
+    mismatch drags the ratio far below 0.85) and under autojunk-on longest-match
+    on long text (common chars get junked)."""
+    quote = "reduces total cost of ownership by roughly thirty percent over three years"
+    text = (
+        "According to the vendor whitepaper and several independent case studies, "
+        "the platform reduces total cost of ownership by roughly thirty percent "
+        "over three years when compared with the legacy on-premise stack that most "
+        "enterprises currently operate today, which is a substantial saving."
+    )
+    assert verify.quote_matches(quote, text)
+
+
+def test_quote_with_one_char_typo_still_verifies():
+    """A quote with a single-character typo still covers >= 85% of itself as a
+    contiguous run, so it verifies (robust to minor transcription noise)."""
+    text = (
+        "Industry surveys consistently report that container adoption is the most "
+        "widely deployed approach in production environments today, far ahead of "
+        "every documented alternative across the surveyed organizations."
+    )
+    quote = "container adoption is the most widly deployed approach in production environments"
+    assert verify.quote_matches(quote, text)
+
+
+def test_fabricated_quote_not_in_source_fails():
+    """A fabricated quote that is NOT present in the source must still fail —
+    the substring metric must not over-accept."""
+    text = (
+        "According to the vendor whitepaper and several independent case studies, "
+        "the platform reduces total cost of ownership by roughly thirty percent "
+        "over three years when compared with the legacy on-premise stack."
+    )
+    fabricated = "the system automatically triples revenue within the first fiscal quarter"
+    assert not verify.quote_matches(fabricated, text)
+
+
+# --------------------------------------------------------------------------- #
 # origin routing
 # --------------------------------------------------------------------------- #
 def _web_claim():
