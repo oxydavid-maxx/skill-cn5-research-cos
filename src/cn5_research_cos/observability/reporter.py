@@ -16,7 +16,10 @@ invocation form and is trivially red-teamable (Task 5). No LLM, no wall-clock.
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from typing import TYPE_CHECKING, TextIO
+
+from .errors import VisibilityContractError
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from ..models import AuditResult, Decision, ReadinessScore, ResearchState
@@ -33,18 +36,54 @@ class StageReporter:
     The reporter only labels + writes + flushes.
     """
 
-    def __init__(self, stream: TextIO | None = None) -> None:
+    def __init__(self, stream: TextIO | None = None, *, run_dir=None) -> None:
         self.stream: TextIO = stream if stream is not None else sys.stdout
+        # P5d: the durable sink — the ONE real 100%. If a run_dir is given, every
+        # stage block is appended to ``<run_dir>/debate.md`` (utf-8, flushed),
+        # fail-CLOSED. run_dir is OPTIONAL (back-compat: a StringIO-only reporter
+        # with no run_dir writes no file and behaves exactly as it did in P5b).
+        self._debate_path: Path | None = (
+            Path(run_dir) / "debate.md" if run_dir is not None else None
+        )
+        if self._debate_path is not None:
+            try:
+                self._debate_path.parent.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                raise VisibilityContractError(
+                    f"Failed to create debate directory {self._debate_path.parent}: {exc}",
+                    sink=str(self._debate_path.parent),
+                ) from exc
 
     def stage(self, name: str, body: str) -> None:
         """Write a ``=== [name] ===`` header, the body, and a trailing blank line,
         then FLUSH. The flush is the guarantee that the block reaches the pipe now
-        (not at process exit)."""
+        (not at process exit). If a ``run_dir`` was given, the SAME block is first
+        appended to the durable ``debate.md`` sink (fail-closed)."""
         block = f"=== [{name}] ===\n{body}\n\n"
+        self._persist(name, block)
         self.stream.write(block)
         # Flush AFTER the whole block so a reader sees the complete stage at once,
         # and so the next stage cannot be coalesced into a single end-of-run dump.
         self.stream.flush()
+
+    def _persist(self, name: str, block: str) -> None:
+        """Append a block to the durable ``debate.md`` sink, flushed, FAIL-CLOSED.
+
+        Mirrors ``albert/deliberation.py``: a write failure raises
+        ``VisibilityContractError`` — for an audit-driven cockpit, losing the
+        auditable record must stop the run, not degrade silently. No-op when no
+        ``run_dir`` was provided (back-compat)."""
+        if self._debate_path is None:
+            return
+        try:
+            with open(self._debate_path, "a", encoding="utf-8") as f:
+                f.write(block)
+                f.flush()
+        except OSError as exc:
+            raise VisibilityContractError(
+                f"Failed to append debate block to {self._debate_path}: {exc}",
+                phase=name, sink=str(self._debate_path),
+            ) from exc
 
     def line(self, text: str) -> None:
         """Emit a single flushed line (used by harnesses / the red-team script for
