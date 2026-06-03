@@ -1,5 +1,5 @@
 """Task 5 (P5): deterministic memo assembly (9 sections + blocker labels)."""
-from cn5_research_cos.synthesis.memo import assemble_memo, NINE_SECTION_KEYS
+from cn5_research_cos.synthesis.memo import assemble_memo, MEMO_ORDER, NINE_SECTION_KEYS
 from cn5_research_cos.brains.synthesis import MockSynthesizer, SECTION_KEYS
 from cn5_research_cos.models import (
     AlbertChallenge, BlockerType, ChallengeStatus, IssueNode, IssueStatus,
@@ -27,10 +27,15 @@ def test_section_keys_single_source_of_truth():
     assert len(NINE_SECTION_KEYS) == 9
 
 
-def test_memo_has_nine_sections_in_order():
+def test_memo_emits_in_findings_first_order():
+    # Component A: the deliverable LEADS with findings, then emits every key in
+    # the MEMO_ORDER (findings + the 9 §22 sections re-ordered as the tail).
     memo = assemble_memo(_state(), MockSynthesizer())
-    assert memo.section_keys() == NINE_SECTION_KEYS
-    assert len(memo.sections) == 9
+    assert memo.section_keys() == MEMO_ORDER
+    assert memo.sections[0].key == "findings"
+    # all 9 §22 keys are still present (as the supporting tail).
+    assert set(NINE_SECTION_KEYS).issubset(set(memo.section_keys()))
+    assert len(memo.sections) == len(NINE_SECTION_KEYS) + 1  # +findings
 
 
 def test_every_section_has_title_and_body():

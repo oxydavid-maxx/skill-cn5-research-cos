@@ -323,7 +323,7 @@ def steer(
     except FileNotFoundError as e:
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(code=1)
-    apply_steer(state, text, now=now)
+    apply_steer(state, text, now=now, base_dir=base_dir)
     save_snapshot(state, base_dir=base_dir)
     console.print(f"[green]已注入 steer 事件[/green] run_id={run_id}：{text}")
     console.print("[dim]下一次 cos run --resume / run-auto 的下一輪會重排。[/dim]")

@@ -238,7 +238,10 @@ def scan_reference_folder(state: ResearchState, *, base_dir: str = "runs") -> li
     home = find_paperwork_home()
     processed = set(state.processed_references)
     bundles: list[EvidenceBundle] = []
-    for path in sorted(ref_dir.iterdir()):
+    # Walk RECURSIVELY so the per-topic store's subfolders (Component B:
+    # reference/sources/<sid>.md for AI-collected sources, reference/steer/<date>.md
+    # for cos-steer answers) are picked up alongside top-level human attachments.
+    for path in sorted(ref_dir.rglob("*")):
         if not path.is_file():
             continue
         key = _dedup_key(path)

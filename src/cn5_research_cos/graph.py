@@ -33,7 +33,7 @@ from .artifacts import issue_map
 from .brains import build_brains
 from .llm import sdk_client
 from .decision import (anti_premature, branch_budget, convergence, exhaustion,
-                       gate, risk)
+                       gate, risk, run_cap)
 from .models import (ChallengeStatus, Decision, EvidenceBundle, HumanTask,
                      HumanTaskStatus, IssueStatus, IssueType, ResearchState)
 from .notify import notify_supplement_needed
@@ -388,11 +388,30 @@ def node_research_fanout(state: GraphState) -> GraphState:
     return {"worker_results": [b.model_dump() for b in bundles]}
 
 
+def _persist_ai_sources(rs: ResearchState, bundle: EvidenceBundle, base_dir) -> None:
+    """Component B: save each source in ``bundle`` as a durable note in the
+    per-topic reference store, and pre-mark its dedup key processed so the same-run
+    scan does not re-ingest it (it is already web evidence this run). Best-effort:
+    a write failure must never break the loop."""
+    try:
+        from .brains.reference_store import save_source_note
+        from .brains.internal_doc import _dedup_key
+        for src in bundle.sources:
+            note_path = save_source_note(rs, src, base_dir=str(base_dir))
+            key = _dedup_key(note_path)
+            if key not in rs.processed_references:
+                rs.processed_references.append(key)
+    except Exception:  # noqa: BLE001 - reference-store write must never crash the loop
+        logger.warning("AI-source reference-store write failed; loop continues",
+                       exc_info=True)
+
+
 def node_collect(state: GraphState) -> GraphState:
     """Fold worker_results into research_state.evidence and advance issue status."""
     rs = state["research_state"]
     now = state.get("now", "t")
     prereqs = dict(state.get("prereqs", {}))
+    base_dir = state.get("base_dir", "runs")
     for raw in state.get("worker_results", []):
         bundle = EvidenceBundle.model_validate(raw)
         rs.evidence.append(bundle)
@@ -406,11 +425,16 @@ def node_collect(state: GraphState) -> GraphState:
                 issue_map.set_status(rs, iid, IssueStatus.answered, now=now)
                 node.confidence = 4
             node.evidence_refs.append(bundle.query)
+        # Component B: persist each AI-collected source as a durable note in the
+        # per-topic reference store (reference/sources/<sid>.md). The source is
+        # ALREADY web evidence this run, so pre-mark its note's dedup key processed
+        # so the same-run scan does not re-ingest it as internal evidence; a future
+        # RE-RUN (fresh processed_references) accumulates it from the store.
+        _persist_ai_sources(rs, bundle, base_dir)
     # P5c: scan the per-run reference drop folder for NEW human-supplied documents
     # (PDF/Word/PPT/Excel/HTML/Markdown), convert + fold them into evidence as
     # internal-origin bundles. Dedup by name+mtime so each file is processed once.
     # Best-effort: a scan failure must never break the loop (observability/intake).
-    base_dir = state.get("base_dir", "runs")
     try:
         from .brains.internal_doc import scan_reference_folder
         for ref_bundle in scan_reference_folder(rs, base_dir=str(base_dir)):
@@ -706,7 +730,11 @@ def _build_and_gate_memo(state: GraphState, rs: ResearchState) -> None:
     if synth is None:
         return
     memo = assemble_memo(rs, synth)
-    explicit = bool(state.get("explicit_emit", False))
+    # Component C: a HARD-cap stop emits the current findings (degraded-but-honest)
+    # even if the readiness/completeness target is not met — treat the cap stop as
+    # an explicit emit so the deliverable is still produced (the CORRECTNESS gates,
+    # degraded-audit + citation, still apply; explicit only skips COMPLETENESS).
+    explicit = bool(state.get("explicit_emit", False)) or bool(rs.stop_reason)
     check_emission(rs, memo, explicit=explicit)
     rs.final_memo = render_memo(memo)
     # P5c Task 3: if the confidence policy routed any unverified-CRITICAL claim to
@@ -868,6 +896,13 @@ def _route(state: GraphState) -> str:
     rs = state["research_state"]
     decision = state.get("last_decision", Decision.continue_research)
     max_it = state.get("max_iterations", 8)
+    # Component C: a HARD cost/wall cap hit ends the run AFTER the current node —
+    # record the reason, then wrap up via the deep-audit -> review -> emit path
+    # (the findings are still produced; degraded-but-honest). Checked before the
+    # decision/ceiling routing so a runaway loop cannot start another iteration.
+    if run_cap.cap_hit_now():
+        rs.stop_reason = run_cap.cap_reason_now()
+        return "deep_audit"
     # Terminal / synthesize / iteration-ceiling → run the Tier-2 deep audit, then
     # the H6 review seam, then END.
     if decision in (Decision.terminal_stop, Decision.synthesize) or rs.iteration_count >= max_it:
@@ -890,6 +925,9 @@ def _route_after_pull(state: GraphState) -> str:
     the iteration ceiling is hit → go to the H6 review seam to wrap up."""
     rs = state["research_state"]
     max_it = state.get("max_iterations", 8)
+    if run_cap.cap_hit_now():
+        rs.stop_reason = run_cap.cap_reason_now()
+        return "human_review"
     if rs.iteration_count >= max_it:
         return "human_review"
     return "supervisor"
@@ -999,6 +1037,8 @@ def run_loop(
     metrics=None,
     return_metrics: bool = False,
     reporter=None,
+    max_cost_usd: float | None = None,
+    max_wall_s: float | None = None,
 ):
     """Run the convergence loop to completion.
 
@@ -1031,14 +1071,23 @@ def run_loop(
     if reporter is not None:
         init["reporter"] = reporter
 
+    # Component C: publish the HARD cap (cost/wall) for the duration of the run so
+    # the router can hard-stop AFTER the current node. Non-serializable metrics ride
+    # the contextvar (like the reporter), never GraphState.
+    cost_cap, wall_cap = run_cap.caps_from_args(max_cost_usd, max_wall_s)
+    cap_token = run_cap.publish_cap(metrics, max_cost_usd=cost_cap, max_wall_s=wall_cap)
+
     def _invoke():
         return app.invoke(init, config={"recursion_limit": 100})
 
-    if llm == "real":
-        with sdk_client.use_session_pool(metrics=metrics):
+    try:
+        if llm == "real":
+            with sdk_client.use_session_pool(metrics=metrics):
+                out = _invoke()
+        else:
             out = _invoke()
-    else:
-        out = _invoke()
+    finally:
+        run_cap.reset_cap(cap_token)
 
     final = out["research_state"]
     save_snapshot(final, base_dir=base_dir)
@@ -1050,18 +1099,36 @@ def run_loop(
 # --------------------------------------------------------------------------- #
 # P3 auto mode + H4 steering
 # --------------------------------------------------------------------------- #
-def apply_steer(rs: ResearchState, text: str, *, now: str = "t") -> dict:
+def apply_steer(rs: ResearchState, text: str, *, now: str = "t",
+                base_dir: str | None = None) -> dict:
     """Append an H4 ``steer`` event to the (checkpointed) state. The next
     iteration's ``node_supervisor`` consumes it and re-ranks toward the steered
-    direction. Returns the appended event."""
+    direction. Returns the appended event.
+
+    Component B: a steer answer is ALSO a human contribution to the per-topic
+    reference store — when ``base_dir`` is supplied, the answer is written as a
+    dated note (``reference/steer/<date>.md``) so ``scan_reference_folder`` picks
+    it up as durable material, not just a transient steering_event. Best-effort:
+    a write failure never blocks the steer."""
     ev = {"kind": "steer", "text": text, "at": now, "consumed": False}
     rs.steering_events.append(ev)
     rs.updated_at = now
+    if base_dir is not None:
+        try:
+            from .brains.reference_store import save_steer_note
+            save_steer_note(rs, text, base_dir=str(base_dir), now=now)
+        except Exception:  # noqa: BLE001 - reference-store write must never block steer
+            logger.warning("steer reference-store write failed; steer applied",
+                           exc_info=True)
     return ev
 
 
 def _stop_reason(final: ResearchState, decision, *, paused: bool, max_iterations: int):
     """Compose the §8.3/§9.4 stop reason for an auto run."""
+    # Component C: a HARD-cap stop is reported first (the run ended on the cap, not
+    # on convergence/ceiling). The reason was recorded on the state by the router.
+    if getattr(final, "stop_reason", None):
+        return ("hard_cap", final.stop_reason)
     if paused:
         return ("hard_stop_high_risk",
                 "高風險人類介入點：auto 模式硬停，等待人類回答（可 resume）")
@@ -1088,6 +1155,8 @@ def run_auto(
     run_id: str | None = None,
     metrics=None,
     reporter=None,
+    max_cost_usd: float | None = None,
+    max_wall_s: float | None = None,
 ):
     """Overnight AUTO mode (spec §"auto mode" + Test 5).
 
@@ -1136,6 +1205,10 @@ def run_auto(
     # P5b: publish the reporter on the contextvar (the checkpointed path cannot
     # carry it in GraphState). Reset on exit so it never leaks into another run.
     _tok = _REPORTER_CV.set(reporter) if reporter is not None else None
+    # Component C: publish the HARD cap (cost/wall) for the duration of the run so
+    # the router can hard-stop AFTER the current node (mirrors run_loop).
+    cost_cap, wall_cap = run_cap.caps_from_args(max_cost_usd, max_wall_s)
+    cap_token = run_cap.publish_cap(metrics, max_cost_usd=cost_cap, max_wall_s=wall_cap)
     try:
         if llm == "real":
             with sdk_client.use_session_pool(metrics=metrics):
@@ -1153,6 +1226,7 @@ def run_auto(
         save_snapshot(final, base_dir=base_dir)
     finally:
         conn.close()
+        run_cap.reset_cap(cap_token)
         if _tok is not None:
             _REPORTER_CV.reset(_tok)
 

@@ -153,4 +153,6 @@ def test_assembled_memo_then_gated():
     memo = assemble_memo(rs, MockSynthesizer())
     gated = check_emission(rs, memo, explicit=True)
     assert gated.emitted is True
-    assert gated.section_keys() and len(gated.sections) == 9
+    # Component A: findings lead + the 9 §22 sections (the supporting tail).
+    assert gated.section_keys() and len(gated.sections) == 10
+    assert gated.sections[0].key == "findings"
