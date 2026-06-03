@@ -35,6 +35,7 @@ from .decision import (anti_premature, branch_budget, convergence, exhaustion,
                        gate, risk)
 from .models import (ChallengeStatus, Decision, EvidenceBundle, HumanTask,
                      HumanTaskStatus, IssueStatus, IssueType, ResearchState)
+from .notify import notify_supplement_needed
 from .observability import reporter as _obs
 from .state import GraphState
 from .store import save_snapshot
@@ -692,6 +693,43 @@ def _build_and_gate_memo(state: GraphState, rs: ResearchState) -> None:
     explicit = bool(state.get("explicit_emit", False))
     check_emission(rs, memo, explicit=explicit)
     rs.final_memo = render_memo(memo)
+    # P5c Task 3: if the confidence policy routed any unverified-CRITICAL claim to
+    # needs_supplement (HumanTask created in assemble_memo), NOTIFY the user (email)
+    # and CONTINUE — never block/pause. Idempotent: an item already notified this
+    # run is not re-emailed (a notify-supplement steering event records the keys).
+    _notify_needs_supplement(state, rs, memo)
+
+
+# Keys already notified this run live in steering_events under this kind, so a
+# later iteration with the same unverified-critical item does not re-email.
+_NOTIFY_EVENT_KIND = "notify-supplement"
+
+
+def _already_notified(rs: ResearchState) -> set[str]:
+    seen: set[str] = set()
+    for e in rs.steering_events:
+        if e.get("kind") == _NOTIFY_EVENT_KIND:
+            seen.update(e.get("items", []))
+    return seen
+
+
+def _notify_needs_supplement(state: GraphState, rs: ResearchState, memo) -> None:
+    """Email the user about NEW unverified-critical (needs-supplement) items, once
+    each. Fail-soft (the notifier never raises); the loop always continues."""
+    items_text = list(getattr(memo, "needs_supplement", []) or [])
+    if not items_text:
+        return
+    already = _already_notified(rs)
+    new_text = [t for t in items_text if t not in already]
+    if not new_text:
+        return
+    # Resolve the corresponding HumanTasks (created by route_citations) to send.
+    tasks = [t for t in rs.human_tasks.values() if t.requested_input in new_text]
+    if not tasks:
+        return
+    base_dir = state.get("base_dir", "runs") if isinstance(state, dict) else "runs"
+    notify_supplement_needed(rs.run_id, tasks, base_dir=str(base_dir))
+    rs.steering_events.append({"kind": _NOTIFY_EVENT_KIND, "items": new_text})
 
 
 def node_human_review(state: GraphState) -> GraphState:
