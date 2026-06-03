@@ -11,12 +11,14 @@ test after implementation returns. Without the opt-in it is skipped.
 """
 from __future__ import annotations
 
+import io
 import os
 
 import pytest
 
 from cn5_research_cos.brains import build_brains
 from cn5_research_cos.graph import run_auto
+from cn5_research_cos.observability.reporter import StageReporter
 from cn5_research_cos.synthesis.gates import check_emission
 from cn5_research_cos.synthesis.memo import NINE_SECTION_KEYS, assemble_memo
 from cn5_research_cos.models import ResearchState
@@ -31,11 +33,29 @@ def test_real_run_emits_section22_memo(tmp_path):
         run_id="live-memo",
         original_question="Should our BU build an autonomous overnight research agent?",
     )
-    result = run_auto(rs, base_dir=tmp_path, max_iterations=3, now="t0", llm="real")
+    # P5b: thread a StageReporter writing to an in-memory buffer so we can assert the
+    # adversarial debate (incl. Albert's challenges) was VISIBLE during the run.
+    debate_buf = io.StringIO()
+    reporter = StageReporter(stream=debate_buf)
+    result = run_auto(rs, base_dir=tmp_path, max_iterations=3, now="t0", llm="real",
+                      reporter=reporter)
     final = result["state"]
 
     assert final.iteration_count >= 1
     assert final.last_audit is not None
+
+    # P5b live-debate visibility: the per-stage stream shows the Albert audit block
+    # with at least one challenge (the debate was watchable as the loop ran).
+    debate = debate_buf.getvalue()
+    assert "[albert_audit]" in debate, "Albert audit stage was not streamed"
+    assert "verdict:" in debate, "Albert verdict was not streamed"
+    assert final.albert_challenge_map, "no Albert challenges were raised"
+    for ch in final.albert_challenge_map.values():
+        # at least one challenge's text appears in the live stream (FULL, not sliced).
+        if ch.challenge and ch.challenge in debate:
+            break
+    else:
+        raise AssertionError("no Albert challenge text appeared in the live stream")
 
     # Assemble + gate the §22 memo on the REAL synthesizer (explicit emit so a short
     # run that has not hit the readiness target still produces the memo for review).
