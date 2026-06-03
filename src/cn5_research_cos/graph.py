@@ -151,7 +151,9 @@ def _brains(state: GraphState | None = None):
     llm = (state or {}).get("llm", "mock") if isinstance(state, dict) else "mock"
     research_source = (state or {}).get("research_source", "web") \
         if isinstance(state, dict) else "web"
-    return build_brains(llm or "mock", research_source=research_source or "web")
+    albert = (state or {}).get("albert", "sim") if isinstance(state, dict) else "sim"
+    return build_brains(llm or "mock", research_source=research_source or "web",
+                        albert=albert or "sim")
 
 
 # P5b: the checkpointed graph (run_auto / cos run) cannot carry a StageReporter
@@ -995,6 +997,7 @@ def run_loop(
     now: str = "t",
     llm: str = "mock",
     research_source: str = "web",
+    albert: str = "sim",
     metrics=None,
     return_metrics: bool = False,
     reporter=None,
@@ -1023,6 +1026,7 @@ def run_loop(
         "max_iterations": max_iterations,
         "llm": llm,
         "research_source": research_source,
+        "albert": albert,
     }
     # P5b: thread the live-debate reporter (non-JSON-serializable, so only on the
     # non-checkpointed compile_graph() path). None → nodes emit nothing.
@@ -1081,6 +1085,7 @@ def run_auto(
     now: str = "t",
     llm: str = "mock",
     research_source: str = "web",
+    albert: str = "sim",
     default_priority: str | None = None,
     run_id: str | None = None,
     metrics=None,
@@ -1122,6 +1127,7 @@ def run_auto(
         "max_iterations": max_iterations,
         "llm": llm,
         "research_source": research_source,
+        "albert": albert,
         "mode": "auto",
         "enable_h6": False,
     }
