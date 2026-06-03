@@ -181,6 +181,26 @@ class Claim(BaseModel):
     notes: str = ""
 
 
+class CitationStatus(str, Enum):
+    verified = "verified"
+    unverified = "unverified"
+    escalated = "escalated"
+    flagged = "flagged"
+
+
+class VerifyResult(BaseModel):
+    """Result of routing a claim through citation verification (P4b Component 3)."""
+    claim: str
+    origin: str                      # "web" | "internal"
+    verified: bool
+    method: str                      # "difflib" | "paperwork" | "none"
+    quote: str = ""
+    source_refs: list[str] = Field(default_factory=list)
+    ratio: float = 0.0
+    status: CitationStatus = CitationStatus.unverified
+    reason: str = ""
+
+
 class EvidenceBundle(BaseModel):
     query: str
     issue_id: str | None = None
