@@ -339,3 +339,7 @@ class ResearchState(BaseModel):
     final_memo: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
+    # Component C: the reason the run stopped when a HARD cap (cost/wall) fired
+    # (e.g. "hard cost cap hit: $10.31 >= $10.00"). None on a normal stop. The loop
+    # records this then emits the current findings (degraded-but-honest).
+    stop_reason: str | None = None

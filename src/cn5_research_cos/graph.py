@@ -33,7 +33,7 @@ from .artifacts import issue_map
 from .brains import build_brains
 from .llm import sdk_client
 from .decision import (anti_premature, branch_budget, convergence, exhaustion,
-                       gate, risk)
+                       gate, risk, run_cap)
 from .models import (ChallengeStatus, Decision, EvidenceBundle, HumanTask,
                      HumanTaskStatus, IssueStatus, IssueType, ResearchState)
 from .notify import notify_supplement_needed
@@ -706,7 +706,11 @@ def _build_and_gate_memo(state: GraphState, rs: ResearchState) -> None:
     if synth is None:
         return
     memo = assemble_memo(rs, synth)
-    explicit = bool(state.get("explicit_emit", False))
+    # Component C: a HARD-cap stop emits the current findings (degraded-but-honest)
+    # even if the readiness/completeness target is not met — treat the cap stop as
+    # an explicit emit so the deliverable is still produced (the CORRECTNESS gates,
+    # degraded-audit + citation, still apply; explicit only skips COMPLETENESS).
+    explicit = bool(state.get("explicit_emit", False)) or bool(rs.stop_reason)
     check_emission(rs, memo, explicit=explicit)
     rs.final_memo = render_memo(memo)
     # P5c Task 3: if the confidence policy routed any unverified-CRITICAL claim to
@@ -868,6 +872,13 @@ def _route(state: GraphState) -> str:
     rs = state["research_state"]
     decision = state.get("last_decision", Decision.continue_research)
     max_it = state.get("max_iterations", 8)
+    # Component C: a HARD cost/wall cap hit ends the run AFTER the current node —
+    # record the reason, then wrap up via the deep-audit -> review -> emit path
+    # (the findings are still produced; degraded-but-honest). Checked before the
+    # decision/ceiling routing so a runaway loop cannot start another iteration.
+    if run_cap.cap_hit_now():
+        rs.stop_reason = run_cap.cap_reason_now()
+        return "deep_audit"
     # Terminal / synthesize / iteration-ceiling → run the Tier-2 deep audit, then
     # the H6 review seam, then END.
     if decision in (Decision.terminal_stop, Decision.synthesize) or rs.iteration_count >= max_it:
@@ -890,6 +901,9 @@ def _route_after_pull(state: GraphState) -> str:
     the iteration ceiling is hit → go to the H6 review seam to wrap up."""
     rs = state["research_state"]
     max_it = state.get("max_iterations", 8)
+    if run_cap.cap_hit_now():
+        rs.stop_reason = run_cap.cap_reason_now()
+        return "human_review"
     if rs.iteration_count >= max_it:
         return "human_review"
     return "supervisor"
@@ -999,6 +1013,8 @@ def run_loop(
     metrics=None,
     return_metrics: bool = False,
     reporter=None,
+    max_cost_usd: float | None = None,
+    max_wall_s: float | None = None,
 ):
     """Run the convergence loop to completion.
 
@@ -1031,14 +1047,23 @@ def run_loop(
     if reporter is not None:
         init["reporter"] = reporter
 
+    # Component C: publish the HARD cap (cost/wall) for the duration of the run so
+    # the router can hard-stop AFTER the current node. Non-serializable metrics ride
+    # the contextvar (like the reporter), never GraphState.
+    cost_cap, wall_cap = run_cap.caps_from_args(max_cost_usd, max_wall_s)
+    cap_token = run_cap.publish_cap(metrics, max_cost_usd=cost_cap, max_wall_s=wall_cap)
+
     def _invoke():
         return app.invoke(init, config={"recursion_limit": 100})
 
-    if llm == "real":
-        with sdk_client.use_session_pool(metrics=metrics):
+    try:
+        if llm == "real":
+            with sdk_client.use_session_pool(metrics=metrics):
+                out = _invoke()
+        else:
             out = _invoke()
-    else:
-        out = _invoke()
+    finally:
+        run_cap.reset_cap(cap_token)
 
     final = out["research_state"]
     save_snapshot(final, base_dir=base_dir)
@@ -1062,6 +1087,10 @@ def apply_steer(rs: ResearchState, text: str, *, now: str = "t") -> dict:
 
 def _stop_reason(final: ResearchState, decision, *, paused: bool, max_iterations: int):
     """Compose the §8.3/§9.4 stop reason for an auto run."""
+    # Component C: a HARD-cap stop is reported first (the run ended on the cap, not
+    # on convergence/ceiling). The reason was recorded on the state by the router.
+    if getattr(final, "stop_reason", None):
+        return ("hard_cap", final.stop_reason)
     if paused:
         return ("hard_stop_high_risk",
                 "高風險人類介入點：auto 模式硬停，等待人類回答（可 resume）")
@@ -1088,6 +1117,8 @@ def run_auto(
     run_id: str | None = None,
     metrics=None,
     reporter=None,
+    max_cost_usd: float | None = None,
+    max_wall_s: float | None = None,
 ):
     """Overnight AUTO mode (spec §"auto mode" + Test 5).
 
@@ -1136,6 +1167,10 @@ def run_auto(
     # P5b: publish the reporter on the contextvar (the checkpointed path cannot
     # carry it in GraphState). Reset on exit so it never leaks into another run.
     _tok = _REPORTER_CV.set(reporter) if reporter is not None else None
+    # Component C: publish the HARD cap (cost/wall) for the duration of the run so
+    # the router can hard-stop AFTER the current node (mirrors run_loop).
+    cost_cap, wall_cap = run_cap.caps_from_args(max_cost_usd, max_wall_s)
+    cap_token = run_cap.publish_cap(metrics, max_cost_usd=cost_cap, max_wall_s=wall_cap)
     try:
         if llm == "real":
             with sdk_client.use_session_pool(metrics=metrics):
@@ -1153,6 +1188,7 @@ def run_auto(
         save_snapshot(final, base_dir=base_dir)
     finally:
         conn.close()
+        run_cap.reset_cap(cap_token)
         if _tok is not None:
             _REPORTER_CV.reset(_tok)
 
