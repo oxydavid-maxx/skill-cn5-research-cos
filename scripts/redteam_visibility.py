@@ -48,10 +48,43 @@ THE 6 MANUAL INVOCATION FORMS (run each; you should SEE the Albert block in all)
 """
 from __future__ import annotations
 
+import argparse
 import sys
 
 START_MARKER = "[[REDTEAM-START]]"
 END_MARKER = "[[REDTEAM-END]]"
+
+# The HONEST ledger (spec 2026-06-03): name exactly what the visibility model
+# defends and — just as loudly — what it does NOT. No "100%/invincible" claims.
+DEFENDED = [
+    "durable debate.md survives redirect/pipe/background/no-tty/pty/harness "
+    "(it is on disk; it does not depend on a screen)",
+    "accidental hide is refused (non-tty stdout AND stderr → exit 2 with guidance)",
+    "real foreground terminal sees the debate live on flushed UTF-8 stderr/stdout",
+]
+NOT_DEFENDED = [
+    "no screen exists (headless CI/cron/service) — nobody can paint pixels on a "
+    "non-existent screen; we do NOT claim to",
+    "a hostile pty wrapper (script/winpty/tmux) that owns the terminal — it elected "
+    "to own the channel",
+    "a user who CHOSE --allow-redirect / CN5_COS_ALLOW_REDIRECT=1 — they opted out "
+    "on purpose (the durable file still has everything)",
+]
+
+
+def print_honesty_ledger(out=None) -> None:
+    """Print the DEFENDED vs NOT-DEFENDED honesty ledger. This is the whole point of
+    P5d: report honestly which adversaries are handled and which are not, with NO
+    overclaim language."""
+    w = (out or sys.stdout)
+    w.write("=== VISIBILITY HONESTY LEDGER ===\n")
+    w.write("DEFENDED:\n")
+    for item in DEFENDED:
+        w.write(f"  [DEFENDED] {item}\n")
+    w.write("NOT-DEFENDED (stated honestly — no 100%/invincible claim):\n")
+    for item in NOT_DEFENDED:
+        w.write(f"  [NOT-DEFENDED] {item}\n")
+    w.flush()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -60,24 +93,59 @@ def main(argv: list[str] | None = None) -> int:
     import tempfile
 
     from cn5_research_cos.models import ResearchState
-    from cn5_research_cos.observability.reporter import StageReporter
+    from cn5_research_cos.observability.guard import refuse_if_hidden
+    from cn5_research_cos.observability.reporter import StageReporter, _force_utf8
+
+    # Force UTF-8 on the consoles BEFORE the guard writes its (CJK) refusal, so the
+    # refusal + the live debate render with no mojibake on any machine.
+    _force_utf8(sys.stdout)
+    _force_utf8(sys.stderr)
+
+    ap = argparse.ArgumentParser(prog="redteam_visibility")
+    ap.add_argument("--run-dir", dest="run_dir", default=None,
+                    help="durable debate.md sink dir (P5d). If omitted, a temp dir is used.")
+    ap.add_argument("--allow-redirect", dest="allow_redirect", action="store_true",
+                    help="escape the refuse-if-hidden guard (mirror cos --allow-redirect).")
+    ap.add_argument("--ledger", dest="ledger", action="store_true",
+                    help="print the DEFENDED vs NOT-DEFENDED honesty ledger and exit 0.")
+    args = ap.parse_args(argv if argv is not None else [])
+
+    if args.ledger:
+        print_honesty_ledger()
+        return 0
+
+    # P5d guarantee #3: refuse-if-hidden BEFORE doing anything, so the red-team can
+    # prove the guard fires on a non-tty subprocess (exit 2) unless --allow-redirect
+    # / CN5_COS_ALLOW_REDIRECT=1. The durable file is still written when we proceed.
+    refusal = refuse_if_hidden((sys.stdout, sys.stderr), allow_redirect=args.allow_redirect)
+    if refusal is not None:
+        sys.stderr.write(refusal + "\n")
+        sys.stderr.flush()
+        return 2
 
     # A flushed, non-tty-safe reporter on stdout: the whole point of the red-team.
-    reporter = StageReporter(sys.stdout)
-    reporter.line(START_MARKER)  # flushed start sentinel (proves stream is live)
-
-    # Mock brains (default llm="mock") → fully deterministic, no LLM / no network.
+    # P5d: also give it run_dir so the debate persists durably (fail-closed) — the
+    # adversary cannot hide what is on disk.
     rs = ResearchState(
         run_id="redteam",
         original_question="我們該不該做隔夜自主研究 agent？（red-team 可見性驗證）",
     )
-    with tempfile.TemporaryDirectory() as base:
+
+    def _run(run_dir, base):
+        reporter = StageReporter(sys.stdout, run_dir=run_dir)
+        reporter.line(START_MARKER)  # flushed start sentinel (proves stream is live)
         # run_loop threads the reporter into the (non-checkpointed) GraphState; each
-        # node flushes its stage block to stdout AS THE LOOP RUNS.
+        # node flushes its stage block to stdout AS THE LOOP RUNS + appends to debate.md.
         from cn5_research_cos.graph import run_loop
         run_loop(rs, base_dir=base, max_iterations=4, now="t0", reporter=reporter)
+        reporter.line(END_MARKER)  # flushed end sentinel (must arrive AFTER Albert)
 
-    reporter.line(END_MARKER)  # flushed end sentinel (must arrive AFTER Albert)
+    if args.run_dir is not None:
+        with tempfile.TemporaryDirectory() as base:
+            _run(args.run_dir, base)
+    else:
+        with tempfile.TemporaryDirectory() as base:
+            _run(base, base)
     return 0
 
 
