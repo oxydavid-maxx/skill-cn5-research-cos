@@ -41,3 +41,10 @@ class GraphState(TypedDict, total=False):
     # Test-only: inject a ready-made Brains bundle (non-checkpointed path only,
     # since a Brains dataclass is not JSON-serializable). Production never sets it.
     brains: object
+    # P5b live-debate observability: an optional StageReporter the loop nodes call
+    # to stream a per-stage human-readable summary to stdout (flushed, non-tty
+    # safe). DEFAULT None/off so the existing loop tests (which never thread one)
+    # emit nothing and stay green; the CLI `cos run`/`run-auto` threads a real
+    # StageReporter(sys.stdout) when --stream (default ON). Not JSON-serializable,
+    # so it rides the non-checkpointed compile_graph() path exactly like `brains`.
+    reporter: object

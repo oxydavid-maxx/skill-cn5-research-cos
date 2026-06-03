@@ -20,6 +20,7 @@ all mutation happens in nodes.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import os
 import sqlite3
 from pathlib import Path
@@ -34,6 +35,7 @@ from .decision import (anti_premature, branch_budget, convergence, exhaustion,
                        gate, risk)
 from .models import (ChallengeStatus, Decision, EvidenceBundle, HumanTask,
                      HumanTaskStatus, IssueStatus, IssueType, ResearchState)
+from .observability import reporter as _obs
 from .state import GraphState
 from .store import save_snapshot
 
@@ -148,6 +150,42 @@ def _brains(state: GraphState | None = None):
     return build_brains(llm or "mock", research_source=research_source or "web")
 
 
+# P5b: the checkpointed graph (run_auto / cos run) cannot carry a StageReporter
+# inside GraphState — a reporter is not JSON/msgpack-serializable, so it would
+# break SqliteSaver. The checkpointed path therefore publishes the reporter on
+# this contextvar (set for the duration of the invoke); _report reads the
+# GraphState slot first (non-checkpointed run_loop path), then the contextvar
+# (checkpointed path). Default None → nodes emit nothing → existing tests green.
+_REPORTER_CV: "contextvars.ContextVar[object | None]" = contextvars.ContextVar(
+    "cn5_cos_reporter", default=None,
+)
+
+
+def _active_reporter(state: GraphState):
+    if isinstance(state, dict):
+        r = state.get("reporter")
+        if r is not None:
+            return r
+    return _REPORTER_CV.get()
+
+
+def _report(state: GraphState, stage_name: str, render_fn, *args) -> None:
+    """Stream a per-stage debate block IF a StageReporter is active (threaded into
+    GraphState on the non-checkpointed path, or published on ``_REPORTER_CV`` on
+    the checkpointed path). No-op when none is present — the default in every
+    existing loop test, so they stay green. Rendering is deterministic; a render
+    error must never break the loop (the reporter is observability, not control),
+    so it is swallowed."""
+    reporter = _active_reporter(state)
+    if reporter is None:
+        return
+    try:
+        body = render_fn(*args)
+        reporter.stage(stage_name, body)
+    except Exception:  # noqa: BLE001 - observability must never crash the loop
+        pass
+
+
 def node_intake(state: GraphState) -> GraphState:
     rs: ResearchState = state["research_state"]
     return {
@@ -161,6 +199,7 @@ def node_intake(state: GraphState) -> GraphState:
 def node_scope(state: GraphState) -> GraphState:
     rs = state["research_state"]
     _brains(state).clarify_gate.check(rs)  # P1: always clarified
+    _report(state, "scope", _obs.render_scope, rs)
     return {"research_state": rs}
 
 
@@ -177,6 +216,7 @@ def node_issue_expansion(state: GraphState) -> GraphState:
     _brains(state).issue_expander.expand(rs, now=now)
     prereqs = dict(state.get("prereqs", {}))
     prereqs["broad_expansion"] = True
+    _report(state, "expand", _obs.render_expand, rs)
     return {"research_state": rs, "prereqs": prereqs}
 
 
@@ -361,6 +401,7 @@ def node_collect(state: GraphState) -> GraphState:
                 node.confidence = 4
             node.evidence_refs.append(bundle.query)
     prereqs["source_confidence_checked"] = True
+    _report(state, "research", _obs.render_research, rs)
     return {"research_state": rs, "prereqs": prereqs, "worker_results": []}
 
 
@@ -375,6 +416,7 @@ def node_skeptic(state: GraphState) -> GraphState:
                 if c not in n.counterarguments:
                     n.counterarguments.append(c)
     prereqs["counterargument_pass"] = True
+    _report(state, "critique", _obs.render_critique, rs)
     return {"research_state": rs, "prereqs": prereqs}
 
 
@@ -413,6 +455,9 @@ def node_albert_audit(state: GraphState) -> GraphState:
     else:
         # No further questions means the auditor extracted/closed them.
         prereqs["pending_questions_extracted"] = True
+    # P5b: stream Albert's FULL output (the debate core) + the convergence tally.
+    _report(state, "albert_audit", _obs.render_albert, audit)
+    _report(state, "convergence", _obs.render_convergence, rs)
     return {"research_state": rs, "prereqs": prereqs}
 
 
@@ -446,6 +491,7 @@ def node_readiness_scoring(state: GraphState) -> GraphState:
          + score.research_exhaustion_readiness + score.human_bottleneck_clarity)
     rs.readiness_history.append({"sum": s, "iteration": rs.iteration_count})
     rs.iteration_count += 1
+    _report(state, "readiness", _obs.render_readiness, score)
     return {"research_state": rs}
 
 
@@ -691,7 +737,21 @@ def node_human_review(state: GraphState) -> GraphState:
 
 def node_cos_decision(state: GraphState) -> GraphState:
     """Staged binary gates → a single Decision. Pure decision helpers do the logic;
-    this node records the result and materializes the auditor-requested branch."""
+    this node records the result and materializes the auditor-requested branch.
+
+    P5b: after the decision is computed (any of the staged exits), stream the
+    `decision` stage block — the COS next action + a rationale — so the colleague
+    sees how the debate resolved into an action this round."""
+    out = _decide_cos(state)
+    decision = out.get("last_decision")
+    if decision is not None:
+        from .render.markdown import _DECISION_REASON
+        rationale = _DECISION_REASON.get(decision, "")
+        _report(state, "decision", _obs.render_decision, decision, rationale)
+    return out
+
+
+def _decide_cos(state: GraphState) -> GraphState:
     rs = state["research_state"]
     prereqs = state.get("prereqs", {})
     budget = dict(state.get("branch_budget", {"breadth": DEFAULT_BREADTH, "depth": DEFAULT_DEPTH}))
@@ -885,6 +945,7 @@ def run_loop(
     research_source: str = "web",
     metrics=None,
     return_metrics: bool = False,
+    reporter=None,
 ):
     """Run the convergence loop to completion.
 
@@ -911,6 +972,10 @@ def run_loop(
         "llm": llm,
         "research_source": research_source,
     }
+    # P5b: thread the live-debate reporter (non-JSON-serializable, so only on the
+    # non-checkpointed compile_graph() path). None → nodes emit nothing.
+    if reporter is not None:
+        init["reporter"] = reporter
 
     def _invoke():
         return app.invoke(init, config={"recursion_limit": 100})
@@ -967,6 +1032,7 @@ def run_auto(
     default_priority: str | None = None,
     run_id: str | None = None,
     metrics=None,
+    reporter=None,
 ):
     """Overnight AUTO mode (spec §"auto mode" + Test 5).
 
@@ -1011,6 +1077,9 @@ def run_auto(
     def _invoke_auto():
         return app.invoke(init, config=cfg)
 
+    # P5b: publish the reporter on the contextvar (the checkpointed path cannot
+    # carry it in GraphState). Reset on exit so it never leaks into another run.
+    _tok = _REPORTER_CV.set(reporter) if reporter is not None else None
     try:
         if llm == "real":
             with sdk_client.use_session_pool(metrics=metrics):
@@ -1028,6 +1097,8 @@ def run_auto(
         save_snapshot(final, base_dir=base_dir)
     finally:
         conn.close()
+        if _tok is not None:
+            _REPORTER_CV.reset(_tok)
 
     return {
         "state": final,
