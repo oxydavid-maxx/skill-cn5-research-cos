@@ -1,0 +1,199 @@
+你是一位資深 Automotive Ethernet Switch IC / TSN Switch SoC 競品分析研究員。請針對以下廠商的「公開可查全系列 Ethernet switch / switch SoC / MCU-integrated switch fabric」做完整規格 PK：
+
+廠商：
+1. Infineon
+2. Broadcom
+3. NXP
+4. Microchip
+5. TI
+6. ADI / Maxim
+7. 裕太微 / Motorcomm
+8. 景略 / Jinglue
+
+核心任務：
+我要比較的是「switch IC / switch SoC 本身的 silicon 規格」，不是 Gateway 應用分類。請把每一顆公開產品的 switch 規格拉齊比較。若某產品只是 PHY / MAC-PHY / bridge / MCU peripheral，必須標註，不可混入主 switch PK 表。
+
+請輸出：
+
+# 1. Product coverage
+
+先列完整產品清單：
+
+| Vendor | Product family | Part number | Variant | Product type | Switch? Y/N | Reason | Public source |
+
+Product type 必須精準分類：
+- Standalone Ethernet switch IC
+- Automotive Ethernet switch IC
+- TSN switch
+- Switch SoC with CPU
+- MCU / Gateway SoC with integrated switch fabric
+- PHY-only
+- MAC-PHY
+- Bridge / media converter
+- Unknown
+
+# 2. Master switch silicon PK table
+
+主表只放真正有 switch fabric 的產品。欄位必須包含以下規格，沒有資料填 N/A，不可猜。
+
+## Basic silicon / qualification
+
+| Vendor | Part number | Product family | Status | Target market | Automotive grade | AEC-Q100 grade | ISO 26262 / ASIL support | Safety manual | Security manual | Process node | Foundry if public | Package | Pin count | Temp range | Supply rails | Power typical | Power max | Thermal data |
+
+## Switch fabric
+
+| Vendor | Part number | Total Ethernet ports | Switch fabric bandwidth | Non-blocking Y/N | Switching architecture | Store-and-forward | Cut-through | Cut-through latency | Store-forward latency | Port-to-port latency | Head-of-line blocking prevention | Internal bus width | Clock frequency | Packet buffer total | Packet buffer per port | Shared buffer Y/N | Buffer allocation method | SRAM size | External memory support | Jumbo frame size | MAC table size | VLAN table size | Multicast table size | ACL / TCAM entries | L2 lookup method | L3 routing support | L4 filtering support |
+
+## Port configuration
+
+| Vendor | Part number | 10BASE-T1S ports | 100BASE-T1 ports | 1000BASE-T1 ports | 2.5GBASE-T1 | 5GBASE-T1 | 10GBASE-T1 | 10/100/1000BASE-T copper | SGMII | QSGMII | USXGMII | XFI | RGMII | RMII | MII | GMII | PCIe | SPI | QSPI | MDIO/MDC | I2C | UART | GPIO | Port mux flexibility | Internal PHY count | External PHY interface count |
+
+## Host / CPU / management
+
+| Vendor | Part number | Embedded CPU Y/N | CPU type | CPU core count | CPU frequency | CPU SRAM | CPU TCM | ROM | Flash / eFlash | External flash boot | Secure boot | Firmware required Y/N | Host interface | Register access method | Packet injection/extraction | DMA engine | Descriptor ring | Interrupts | Management CPU isolation | SDK | Driver | AUTOSAR support | Linux support | RTOS support |
+
+## TSN / AVB / timing
+
+| Vendor | Part number | TSN claimed Y/N | IEEE 802.1AS | gPTP | 1-step timestamp | 2-step timestamp | Hardware timestamp location | Timestamp resolution | Timestamp accuracy | PTP ordinary clock | PTP boundary clock | PTP transparent clock | IEEE 802.1Qav CBS | IEEE 802.1Qbv TAS | Gate control list size | Gate time granularity | IEEE 802.1Qbu frame preemption | IEEE 802.3br interspersing express traffic | IEEE 802.1Qci per-stream filtering/policing | IEEE 802.1CB FRER | IEEE 802.1Qch cyclic queuing | IEEE 802.1Qcr ATS | IEEE 802.1CB sequence recovery | AVB support | SRP / MSRP | Credit-based shaper count | Time-aware shaper count | Per-stream policer count | Queue count per port | Scheduler type | Strict priority | WRR / DWRR | ETS | Rate limiter | Ingress policing | Egress shaping |
+
+## Security
+
+| Vendor | Part number | MACsec support | MACsec standard | MACsec ports | MACsec line rate | MACsec key size | SecY count | Secure channel count | SA count | Inline encryption Y/N | AES-GCM | Hardware crypto | TRNG | Secure boot | Secure debug | OTP / eFuse | Key storage | Firewall | ACL security filtering | Port isolation | VLAN isolation | DoS protection | Storm control | Ingress rate limit | Egress rate limit | Management authentication | Firmware authentication |
+
+## Diagnostics / automotive features
+
+| Vendor | Part number | OPEN Alliance TC10 sleep/wake | Wake-on-LAN | Wake pin | Cable diagnostics | TDR | Link quality monitor | SQI | Polarity detection | MDI swap | PHY loopback | MAC loopback | PRBS | BIST | ECC SRAM | Parity | Watchdog | Error counters | RMON counters | Time sync diagnostics | Safety monitor | Built-in self-test | Fault injection support | Overtemp detect | Voltage monitor |
+
+## Standards compliance
+
+| Vendor | Part number | IEEE 802.3 | IEEE 802.3bw | IEEE 802.3bp | IEEE 802.3cg | IEEE 802.1Q | IEEE 802.1p | IEEE 802.1AS | IEEE 802.1Qav | IEEE 802.1Qbv | IEEE 802.1Qbu | IEEE 802.3br | IEEE 802.1Qci | IEEE 802.1CB | IEEE 802.1AE MACsec | OPEN Alliance TC10 | OPEN Alliance TC11 | AVB Gen | TSN profile |
+
+## Development / ecosystem
+
+| Vendor | Part number | Evaluation board | Reference design | SDK | Configuration tool | GUI tool | Linux driver | AUTOSAR MCAL | AUTOSAR Ethernet Switch Driver | Example firmware | PTP stack | TSN stack | Safety documentation | Security documentation | Public datasheet level | NDA required fields |
+
+# 3. Evidence quote table
+
+每一個產品至少提供 5–10 條 evidence quote。所有關鍵規格都要可追溯。
+
+| Vendor | Part number | Spec category | Claim | Exact quote | Source document | Page / section | URL | Evidence grade |
+
+Evidence grade 定義：
+- A = official datasheet / reference manual
+- B = official product brief / selection guide
+- C = official product page / press release
+- D = distributor / third-party
+- E = inferred / uncertain，不可放進主結論
+
+quote 必須證明具體規格，例如：
+- “supports IEEE 802.1Qbv”
+- “supports IEEE 802.1Qbu and IEEE 802.3br”
+- “integrated ARM Cortex-M7”
+- “integrated 512 KB SRAM”
+- “packet buffer size is xxx KB”
+- “MACsec is supported on ports x/y”
+- “AEC-Q100 Grade 1 qualified”
+- “supports OPEN Alliance TC10 sleep/wake”
+- “fabric bandwidth xxx Gbps”
+- “supports cut-through forwarding”
+
+# 4. Missing spec table
+
+請把查不到的規格集中列出，不可猜。
+
+| Vendor | Part number | Missing spec | Why important | Sources checked | Best available evidence | Confidence | NDA likely Y/N |
+
+特別注意以下高風險欄位通常容易缺資料：
+- packet buffer size
+- SRAM size
+- CPU type / frequency
+- MACsec port mapping
+- TSN feature completeness
+- Qbv gate list depth
+- Qbu / 802.3br true support
+- 1-step timestamp location
+- process node
+- power consumption by port configuration
+- cut-through latency
+- TCAM / ACL size
+
+# 5. Fair PK methodology
+
+請用以下原則做 PK：
+
+1. 不要把「supports TSN」當作完整 TSN。
+   必須拆成 Qav / Qbv / Qbu / Qci / CB / gPTP / timestamp。
+
+2. 不要把「PTP support」當作 gPTP / 802.1AS support。
+   必須確認是 IEEE 1588、802.1AS、1-step、2-step、boundary clock、transparent clock哪一種。
+
+3. 不要把「MACsec support」當作所有 port 都支援。
+   必須確認支援在哪些 port、多少 SecY、是否 line-rate。
+
+4. 不要把「10-port switch」當作 10 個 T1 port。
+   必須拆 internal PHY、external interface、host port、uplink port。
+
+5. 不要把 PHY-only 產品放進 switch 表。
+   PHY-only 只能放在 excluded / adjacent product table。
+
+6. 如果某規格只在 NDA datasheet 可能有，請明確標註 public data insufficient。
+
+# 6. Final output format
+
+請輸出：
+
+A. Executive summary，最多 300 字  
+B. Complete product coverage table  
+C. Master switch silicon PK table  
+D. Vendor-by-vendor detailed spec table  
+E. Evidence quote table  
+F. Missing / uncertain data table  
+G. Competitive conclusion  
+
+# 7. Competitive conclusion
+
+最後請回答：
+
+1. 哪一家 switch 規格最完整？
+2. 哪一家 TSN 最完整？
+3. 哪一家 T1 port integration 最強？
+4. 哪一家 MACsec / security 最強？
+5. 哪一家 CPU / firmware / management capability 最強？
+6. 哪一家 safety / automotive readiness 最強？
+7. 哪一家公開資料最完整？
+8. 哪一家最可能只是 PHY 強，不是 switch 強？
+9. 哪些規格是 Realtek 若要贏必須具備？
+10. 哪些規格是 Realtek 可以差異化攻擊的缺口？
+
+# 8. Realtek attack-point analysis
+
+請基於 switch silicon spec，不要泛談 Gateway，分析 Realtek 可以怎麼贏：
+
+| Attack point | Why competitors weak | Required Realtek spec | Evidence from competitor gaps | Priority |
+
+至少分析：
+- More integrated T1 ports
+- Lower power per T1 port
+- Better packet buffer
+- Better Qbv / Qbu / Qci completeness
+- Real MACsec port coverage
+- Lower-cost TSN switch
+- Better software/config tool
+- Better TC10 sleep/wake
+- Better diagnostics
+- Easier host management
+- Better safety package
+- Better public documentation / customer enablement
+
+# 9. Hard rules
+
+1. 所有表格使用繁體中文說明，專業名詞保留英文。
+2. 不要省略欄位。
+3. 沒有資料填 N/A。
+4. 不可 hallucinate。
+5. 不可把 PHY 當 switch。
+6. 不可把 Gateway fit 當主軸。
+7. 主軸是 switch silicon spec PK。
+8. 每個重要數字都要有 quote。
+9. quote 必須來自可追溯來源。
+10. 最後列出「最容易判錯的 10 個規格」。

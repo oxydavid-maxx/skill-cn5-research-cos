@@ -35,6 +35,34 @@ def _now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def _refuse_if_hidden_or_exit(allow_redirect: bool) -> bool:
+    """P5d guarantee #3: refuse (exit 2) when BOTH stdout and stderr are
+    non-interactive and no escape was chosen, so the live debate can't be
+    ACCIDENTALLY hidden. Returns True iff the caller should stop (the message was
+    printed + a typer.Exit(2) raised is preferred, but we return a sentinel so the
+    command can ``return`` cleanly). Escapes honored inside ``refuse_if_hidden``:
+    ``--allow-redirect`` / cockpit / ``CN5_COS_ALLOW_REDIRECT=1``."""
+    from .observability.guard import refuse_if_hidden
+
+    msg = refuse_if_hidden((sys.stdout, sys.stderr), allow_redirect=allow_redirect)
+    if msg is not None:
+        sys.stderr.write(msg + "\n")
+        sys.stderr.flush()
+        raise typer.Exit(code=2)
+    return False
+
+
+def _run_dir_for(base_dir: str, rid: str) -> str:
+    return os.path.join(base_dir, rid)
+
+
+def _announce_debate_path(rid: str, run_dir: str) -> None:
+    """Print where the durable debate transcript lives + the one-command watcher,
+    so a colleague can follow the war-room debate with no knowledge of paths."""
+    console.print(f"[dim]💬 辯論全文（即時存檔）：{os.path.join(run_dir, 'debate.md')}[/dim]")
+    console.print(f"[dim]   跟看：cos watch {rid}[/dim]")
+
+
 @app.command()
 def init(
     question: str = typer.Option(..., "--question", "-q", help="原始問題"),
@@ -83,6 +111,8 @@ def run(
                                       help="從已存的 state.json 起一個互動式 run（需 --run-id）"),
     stream: bool = typer.Option(True, "--stream/--no-stream",
                                 help="即時把每個 stage 的辯論摘要（含 Albert 全文）串流到 stdout"),
+    allow_redirect: bool = typer.Option(False, "--allow-redirect",
+                                        help="允許在非互動式終端機（pipe/重導/背景）執行；辯論仍存於 runs/<id>/debate.md"),
 ):
     """跑研究收斂迴圈（互動式）：跑到 gate interrupt 就暫停並印 ask payload + 如何 resume。
 
@@ -94,6 +124,11 @@ def run(
     if research_source not in ("web", "internal", "auto", "both"):
         console.print(f"[red]--research-source 僅支援 web|internal|auto|both；收到 {research_source!r}[/red]")
         raise typer.Exit(code=2)
+
+    # P5d guarantee #3: refuse to run when the live debate would be ACCIDENTALLY
+    # hidden (no interactive tty on stdout/stderr) unless an escape was chosen.
+    if _refuse_if_hidden_or_exit(allow_redirect):
+        return
 
     now = _now()
     base_dir = _base_dir()
@@ -150,6 +185,10 @@ def run(
     from .llm.metrics import RunMetrics
 
     metrics = RunMetrics()
+
+    # P5d: announce the durable debate transcript + the one-command watcher.
+    run_dir = _run_dir_for(base_dir, rid)
+    _announce_debate_path(rid, run_dir)
 
     def _stream() -> None:
         nonlocal final_state, last_decision, last_printed_iter
@@ -292,6 +331,8 @@ def run_auto_cmd(
                                          help="auto 模式無人時的預設研究優先序"),
     stream: bool = typer.Option(True, "--stream/--no-stream",
                                 help="即時把每個 stage 的辯論摘要（含 Albert 全文）串流到 stdout"),
+    allow_redirect: bool = typer.Option(False, "--allow-redirect",
+                                        help="允許在非互動式終端機（pipe/重導/背景）執行；辯論仍存於 runs/<id>/debate.md"),
 ):
     """隔夜 AUTO 模式：低風險 gate 自動套預設、高風險硬停（可 resume）；印每輪 + 停止原因。"""
     if llm not in ("mock", "real"):
@@ -300,9 +341,13 @@ def run_auto_cmd(
     if research_source not in ("web", "internal", "auto", "both"):
         console.print(f"[red]--research-source 僅支援 web|internal|auto|both；收到 {research_source!r}[/red]")
         raise typer.Exit(code=2)
+    # P5d guarantee #3: refuse if the live debate would be ACCIDENTALLY hidden.
+    if _refuse_if_hidden_or_exit(allow_redirect):
+        return
     now = _now()
     base_dir = _base_dir()
     rid = run_id or "run-" + now.replace(":", "").replace("-", "")
+    _announce_debate_path(rid, _run_dir_for(base_dir, rid))
     initial = ResearchState(run_id=rid, original_question=question,
                             mode="auto", created_at=now, updated_at=now)
     # P5b: stream the live debate (incl. Albert's full output) to stdout as the
