@@ -141,13 +141,33 @@ _RESEARCH_SYSTEM = (
 
 class RealResearcher:
     @staticmethod
+    def _open_challenges_for_issue(state: ResearchState, issue_id: str) -> str:
+        """Render the UNRESOLVED challenges tied to THIS issue so the research is
+        DIRECTED at answering Albert's open questions (P4b convergence). Empty
+        string when none, so the prompt shape is otherwise unchanged."""
+        from ..decision import convergence
+        live = [
+            c for c in convergence.unresolved_challenges(state)
+            if c.issue_id == issue_id
+        ]
+        if not live:
+            return ""
+        lines = "\n".join(f"- [{c.id}] {c.challenge}" for c in live)
+        return (
+            "\n\nALBERT IS CHALLENGING THIS ISSUE — find evidence to ANSWER these "
+            f"open challenges:\n{lines}\n"
+        )
+
+    @staticmethod
     def _user_prompt(state: ResearchState, issue_id: str) -> tuple[str, str]:
         node = state.issue_map.get(issue_id)
         title = node.title if node else issue_id
         desc = node.description if node else ""
+        challenges = RealResearcher._open_challenges_for_issue(state, issue_id)
         user = (
             f"SUB-ISSUE:\n{title}\n{desc}\n\n"
-            f"CONTEXT (original question): {state.original_question}\n\n"
+            f"CONTEXT (original question): {state.original_question}\n"
+            f"{challenges}\n"
             "Run ONE WebSearch for this sub-issue and return sources + grounded claims."
         )
         return title, user

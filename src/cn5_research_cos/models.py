@@ -40,6 +40,8 @@ class IssueStatus(str, Enum):
 class ChallengeStatus(str, Enum):
     open = "open"
     answered = "answered"
+    resolved = "resolved"
+    escalated_to_human = "escalated_to_human"
     needs_internal_data = "needs_internal_data"
     needs_albert_decision = "needs_albert_decision"
     needs_bu_judgment = "needs_bu_judgment"
@@ -126,6 +128,10 @@ class IssueNode(BaseModel):
 class AlbertChallenge(BaseModel):
     id: str
     challenge: str
+    # P4b convergence: the issue this challenge is tied to (the researcher/COS use
+    # it to direct next-round research at the open challenge). Optional — an
+    # untied challenge is a whole-answer challenge.
+    issue_id: str | None = None
     why_albert_would_ask: str = ""
     current_answer: str = ""
     status: ChallengeStatus = ChallengeStatus.open
@@ -136,6 +142,9 @@ class AlbertChallenge(BaseModel):
     next_action: str | None = None
     meeting_ready_response: str | None = None
     classification: Classification | None = None
+    # P4b convergence: how many audit rounds this challenge has been seen in
+    # (incremented on each upsert merge). Drives convergence-signal trends.
+    rounds_seen: int = 0
 
 
 class HumanTask(BaseModel):
@@ -157,6 +166,12 @@ class Source(BaseModel):
     url: str | None = None
     source_type: SourceType = SourceType.secondary
     quality: SourceQuality = SourceQuality.unknown
+    # P4b citation routing: where the source came from. "web" = a WebSearch hit
+    # (Component 3 runs our difflib verbatim verify on its claims); "internal" =
+    # a paperwork/internal-doc fragment (P4a set this; carried as paperwork-
+    # verified, no difflib re-run). Default "web" since the web researcher is the
+    # baseline path; the internal-doc path stamps "internal" explicitly.
+    origin: str = "web"
 
 
 class Claim(BaseModel):
@@ -231,6 +246,9 @@ class ResearchState(BaseModel):
     # scoring / audit
     readiness_score: ReadinessScore | None = None
     readiness_history: list[dict] = Field(default_factory=list)
+    # P4b convergence: per-round snapshot of the unresolved-challenge count, so the
+    # loop can see the open-count trend toward 0 (a convergence signal).
+    convergence_history: list[int] = Field(default_factory=list)
     iteration_count: int = 0
     last_audit: AuditResult | None = None
     # P3 audit tiering: how many times the Tier-2 deep audit ran (only at gates).
