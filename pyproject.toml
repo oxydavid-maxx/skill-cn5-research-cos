@@ -37,7 +37,11 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+# -p no:faker: the `faker` pytest plugin (not used by this project) imports faker
+# at collection, which calls platform.win32_ver() -> WMI and can deadlock pytest
+# collection on Windows/Python 3.12 when the WMI service stalls. Disabling the
+# unused plugin avoids the hang with no platform monkeypatching.
+addopts = "-ra -p no:faker"
 markers = [
     "llm: live LLM test; requires ANTHROPIC_API_KEY (skipped without a key)",
 ]
