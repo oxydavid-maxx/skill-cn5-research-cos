@@ -57,14 +57,59 @@ def test_degraded_audit_refuses():
 
 
 # --- gate 2: convergence (unresolved high-impact challenge) ------------------
-def test_unresolved_high_impact_challenge_refuses():
+# P5b policy: convergence is a COMPLETENESS gate. It refuses on the NORMAL path
+# (explicit=False) but is OVERRIDDEN by an explicit emit command — the §22 memo
+# documents the open challenge in its Albert Challenge Map / Blocking sections, so
+# emitting on explicit command with an open challenge is honest, not a fabrication.
+def test_unresolved_high_impact_challenge_refuses_without_explicit():
+    rs = _good_state()
+    rs.albert_challenge_map = {
+        "C-1": AlbertChallenge(id="C-1", challenge="big one", confidence=5,
+                               status=ChallengeStatus.open),
+    }
+    out = check_emission(rs, _clean_memo(), explicit=False)
+    assert out.emitted is False
+    assert "convergence" in out.refused_reason.lower()
+
+
+def test_unresolved_high_impact_challenge_emits_with_explicit():
+    """P5b Task 4: explicit overrides the convergence (completeness) gate when the
+    correctness gates (degraded-audit, citation) pass."""
     rs = _good_state()
     rs.albert_challenge_map = {
         "C-1": AlbertChallenge(id="C-1", challenge="big one", confidence=5,
                                status=ChallengeStatus.open),
     }
     out = check_emission(rs, _clean_memo(), explicit=True)
+    assert out.emitted is True, f"refused: {out.refused_reason}"
+
+
+def test_explicit_still_refuses_on_degraded_audit_even_with_open_challenge():
+    """Correctness gate 1 ALWAYS applies — explicit never bypasses a degraded audit,
+    even though it would bypass the open-challenge convergence gate."""
+    rs = _good_state()
+    rs.last_audit = _clean_audit(degraded=True)
+    rs.albert_challenge_map = {
+        "C-1": AlbertChallenge(id="C-1", challenge="big one", confidence=5,
+                               status=ChallengeStatus.open),
+    }
+    out = check_emission(rs, _clean_memo(), explicit=True)
     assert out.emitted is False
+    assert "degrad" in out.refused_reason.lower() or "audit" in out.refused_reason.lower()
+
+
+def test_explicit_still_refuses_on_unverified_key_claim_with_open_challenge():
+    """Correctness gate 3 ALWAYS applies — explicit never bypasses an unverified KEY
+    claim, even with an open challenge that the convergence gate would have caught."""
+    rs = _good_state()
+    rs.albert_challenge_map = {
+        "C-1": AlbertChallenge(id="C-1", challenge="big one", confidence=5,
+                               status=ChallengeStatus.open),
+    }
+    memo = Memo(unverified_key_claims=["a decision-critical unverified claim"])
+    out = check_emission(rs, memo, explicit=True)
+    assert out.emitted is False
+    assert "citation" in out.refused_reason.lower()
 
 
 # --- gate 3: citation (unverified KEY claim) --------------------------------
