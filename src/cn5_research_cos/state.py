@@ -25,6 +25,13 @@ class GraphState(TypedDict, total=False):
     now: str
     max_iterations: int
     llm: str
+    # P6 / Component D: the Albert auditor selector — "sim" (default, the
+    # RealAlbertSimulator) | "real" (the external skill-cn5-i-am-albert via
+    # subprocess). MUST be declared here or LangGraph drops the init value after
+    # the first super-step, silently downgrading --albert real to the simulator
+    # (the original 'str' object has no attribute 'get' crash had this as its
+    # first half: _brains defaulted to "sim"). Threaded into build_brains.
+    albert: str
     # P4a: evidence source selector — "web" (default, unchanged) | "internal" |
     # "auto" | "both". Threaded into build_brains exactly like ``llm``.
     research_source: str

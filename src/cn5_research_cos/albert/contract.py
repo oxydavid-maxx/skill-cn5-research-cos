@@ -43,8 +43,23 @@ _CONFIDENCE_MAP = {"low": 1, "medium": 3, "high": 5}
 _RISK_MAP = {"low": "low", "medium": "med", "med": "med", "high": "high"}
 
 
-def _risk(node: dict | None) -> str:
-    level = (node or {}).get("level", "low")
+def _risk_node(node) -> dict:
+    """Normalize a risk field to a dict.
+
+    The vendored/real Albert schema emits ``{"level": "low", ...}``, but a drifting
+    LLM (the auditor is an LLM; structured output is not strictly validated) can
+    flatten it to a BARE STRING ``"low"`` or omit it. Coerce defensively so the
+    mapping NEVER does ``.get`` on a string (the captured root-cause crash:
+    ``'str' object has no attribute 'get'`` at the ``albert_audit`` super-step)."""
+    if isinstance(node, dict):
+        return node
+    if isinstance(node, str):
+        return {"level": node}
+    return {}
+
+
+def _risk(node) -> str:
+    level = _risk_node(node).get("level", "low")
     return _RISK_MAP.get(level, "low")
 
 
@@ -104,7 +119,7 @@ def to_audit_result(challenge: dict) -> dict:
             "questions_albert_would_ask": list(challenge.get("questions_albert_would_ask", []) or []),
             "recommended_next_probe": list(challenge.get("recommended_next_probe", []) or []),
             "readiness_score_delta": int(challenge.get("readiness_score_delta", 0) or 0),
-            "premature_end_atoms": (challenge.get("premature_end_risk") or {}).get("atoms", {}),
-            "grounded_in": (challenge.get("premature_end_risk") or {}).get("grounded_in", "inferred"),
+            "premature_end_atoms": _risk_node(challenge.get("premature_end_risk")).get("atoms", {}),
+            "grounded_in": _risk_node(challenge.get("premature_end_risk")).get("grounded_in", "inferred"),
         },
     }
