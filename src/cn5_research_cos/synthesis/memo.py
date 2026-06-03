@@ -15,8 +15,14 @@ The emission gates (Task 7) decide ``emitted``; assembly never sets it.
 from __future__ import annotations
 
 from ..brains.synthesis import SECTION_KEYS
-from ..models import Blocker, Memo, MemoSection, ResearchState
+from ..citation import policy as cpolicy
+from ..citation import verify as cverify
+from ..models import (Blocker, Claim, Memo, MemoSection, ResearchState, Source)
 from .blockers import label_blockers
+
+# Confidence at/above which a claim is "KEY" (decision-critical) — an unverified
+# KEY claim blocks emission (Task 7's citation gate reads memo.unverified_key_claims).
+KEY_CLAIM_CONF = 4
 
 # Single source of truth for the 9 section keys (mirrors brains.synthesis.SECTION_KEYS).
 NINE_SECTION_KEYS = list(SECTION_KEYS)
@@ -57,6 +63,52 @@ def _render_challenge_statuses(state: ResearchState) -> str:
     )
 
 
+def _collect_claims_sources(state: ResearchState) -> tuple[list[Claim], dict[str, Source]]:
+    """Flatten every evidence bundle's claims + sources into the memo's claim set."""
+    claims: list[Claim] = []
+    sources: dict[str, Source] = {}
+    for b in state.evidence:
+        for s in b.sources:
+            sources[s.id] = s
+        claims.extend(b.claims)
+    return claims, sources
+
+
+def citation_pass(state: ResearchState) -> list[str]:
+    """Run the WIRED-IN P4b citation pipeline over the memo's claims (closes the
+    P4b "built but not in loop" caveat). Returns the list of KEY claims that are
+    UNVERIFIED after flatten + verify + policy — the citation emission gate (Task 7)
+    refuses a memo while this is non-empty.
+
+    Pipeline per claim (uses the EXISTING citation modules, never reimplemented):
+      1. ``flatten_to_primary`` — strip digest refs; a claim left with NO primary
+         ref is flattened to zero refs (it can no longer be verified).
+      2. ``verify.verify_claim`` — web: difflib >= 0.85 against ``Source.excerpt``;
+         internal: carried as paperwork-verified.
+      3. ``policy.classify`` — an unverified KEY (high-confidence) claim is recorded.
+    """
+    claims, sources = _collect_claims_sources(state)
+    source_texts = {sid: (s.excerpt or "") for sid, s in sources.items()}
+
+    unverified_key: list[str] = []
+    for claim in claims:
+        # 1. flatten-to-primary: drop digest refs (verify reads the flattened refs).
+        ok, repointed = cpolicy.flatten_to_primary(claim, sources)
+        flat = claim.model_copy(update={"source_refs": repointed})
+
+        # 2. verify (origin-routed). A digest-only claim (ok is False) has no refs
+        #    left -> web verify finds no source text -> unverified.
+        result = cverify.verify_claim(flat, sources, source_texts)
+
+        # 3. policy: an unverified KEY claim is decision-critical and must block.
+        critical = claim.confidence >= KEY_CLAIM_CONF
+        action = cpolicy.classify(result, critical=critical, reverify_attempted=True)
+        if not result.verified and critical and action.kind in ("escalate_human", "flag"):
+            unverified_key.append(claim.claim)
+
+    return unverified_key
+
+
 def assemble_memo(state: ResearchState, synthesizer) -> Memo:
     """Assemble the §22 memo: LLM prose + deterministic structure/labels.
 
@@ -80,4 +132,6 @@ def assemble_memo(state: ResearchState, synthesizer) -> Memo:
             key=key, title=SECTION_TITLES[key], body=body,
         ))
 
-    return Memo(sections=sections, blockers=blockers)
+    unverified_key = citation_pass(state)
+    return Memo(sections=sections, blockers=blockers,
+                unverified_key_claims=unverified_key)
