@@ -14,11 +14,13 @@ Mock LLM only.
 """
 from __future__ import annotations
 
+import cn5_research_cos.brains.synthesis as syn
 from cn5_research_cos.brains.synthesis import (MockSynthesizer, RealSynthesizer,
                                                SECTION_KEYS)
 from cn5_research_cos.synthesis.memo import (MEMO_ORDER, assemble_memo)
-from cn5_research_cos.models import (AlbertChallenge, ChallengeStatus, Claim,
-                                     EvidenceBundle, ResearchState, Source)
+from cn5_research_cos.models import (AlbertChallenge, CellStatus, ChallengeStatus,
+                                     Claim, EvidenceBundle, ResearchState, Source,
+                                     TaskCell, TaskGrid)
 
 # Sections that present the answer/findings built from evidence — these LEAD.
 _FINDINGS_LEAD = "findings"
@@ -105,6 +107,15 @@ def test_findings_na_when_no_evidence():
     findings = next(s for s in memo.sections if s.key == _FINDINGS_LEAD)
     assert findings.body  # present
     assert "N/A" in findings.body or "無" in findings.body or "尚無" in findings.body
+
+
+def test_render_state_includes_task_grid():
+    rs = ResearchState(run_id="r", original_question="q", task_grid=TaskGrid())
+    rs.task_grid.cells["NXP|fabric"] = TaskCell(
+        id="NXP|fabric", vendor="NXP", spec_group="fabric", objective="o",
+        status=CellStatus.covered, impact=5)
+    text = syn._render_state(rs)
+    assert "NXP" in text and "fabric" in text
 
 
 def test_findings_is_distinct_from_section_schema():

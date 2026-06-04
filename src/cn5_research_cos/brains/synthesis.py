@@ -55,6 +55,10 @@ _SYSTEM = (
     "statement in `findings` MUST carry its evidence citation as [S-…] (the source "
     "id from the evidence). Where there is NO evidence for something the question "
     "asks, write 'N/A（無證據）' — NEVER guess, NEVER fabricate a citation. "
+    "SECTION-AWARE: the `findings` table has ONE ROW PER covered/partial cell of "
+    "the supplied TASK GRID — merge-and-edit each cell into a report row, keyed by "
+    "(vendor, spec_group). For `na`/`blocked` cells write the row as 'N/A（無公開資料/"
+    "受阻）'. NEVER invent a row not backed by a TASK GRID cell + its evidence. "
     "The 9 §22 sections (executive_answer, albert_challenge_map, can_cannot_say, "
     "blocking, required_human_decisions, evidence_summary, risks_assumptions, "
     "recommended_next_action, appendix) are the SUPPORTING TAIL: they document the "
@@ -87,13 +91,24 @@ def _render_state(state: ResearchState) -> str:
         for s in b.sources[:5]:
             sources.append(f"- [{s.id}] {s.title} {s.url or ''}".rstrip())
     sources_txt = "\n".join(sources[:30]) or "(no sources)"
+    # The TASK GRID: each covered/partial cell is one report row in `findings`
+    # (section-aware merge-and-edit). na/blocked cells become N/A rows.
+    grid = getattr(state, "task_grid", None)
+    if grid is not None and grid.cells:
+        grid_lines = "\n".join(
+            f"- [{c.status.value}] {c.vendor} / {c.spec_group}: {c.objective}"
+            for c in grid.cells.values()
+        )
+    else:
+        grid_lines = "(no task grid)"
     return (
         f"ORIGINAL QUESTION:\n{state.original_question}\n\n"
         f"BRIEF:\n{state.research_brief or '(none)'}\n\n"
         f"EVIDENCE CLAIMS (cite these [S-…] in `findings`):\n{claims_txt}\n\n"
         f"SOURCES:\n{sources_txt}\n\n"
         f"ISSUES:\n{issues}\n\n"
-        f"ALBERT CHALLENGES:\n{challenges}\n"
+        f"ALBERT CHALLENGES:\n{challenges}\n\n"
+        f"TASK GRID（每個 covered/partial cell = 報告一列）:\n{grid_lines}\n"
     )
 
 
@@ -105,7 +120,11 @@ class RealSynthesizer:
             f"{_render_state(state)}\n\n"
             "FIRST write `findings`: the research answer to the ORIGINAL QUESTION, "
             "synthesized ONLY from the EVIDENCE CLAIMS above, in the form the "
-            "question asks, with EVERY factual statement cited as [S-…]. Where the "
+            "question asks, with EVERY factual statement cited as [S-…]. Build the "
+            "findings table with ONE ROW PER covered/partial cell of the TASK GRID "
+            "above (section-aware merge-and-edit, keyed by vendor + spec_group); "
+            "write 'N/A（無公開資料/受阻）' for na/blocked cells and NEVER invent a "
+            "row not backed by a TASK GRID cell + evidence. Where the "
             "question asks for something with NO evidence, write 'N/A（無證據）' — "
             "do NOT guess. THEN write the 9 §22 supporting sections "
             "(executive_answer, albert_challenge_map, can_cannot_say, blocking, "
