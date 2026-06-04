@@ -52,6 +52,10 @@ class GraphState(TypedDict, total=False):
     # repeat plan-audit with an unchanged grid is skipped (no redundant flash
     # Albert call). total=False → optional; absent on the first plan audit.
     _last_plan_sig: str
+    # P8 §5 H7 plan-approval gate: the cell count at the last approval. The node
+    # re-prompts only on the first cycle (key absent) or a MAJOR re-decomposition
+    # (>= _H7_MAJOR_DELTA new cells since this count). total=False → optional.
+    _h7_approved_n: int
     # P5: an explicit user command to emit the §22 memo even if the readiness
     # target is not met (the readiness emission gate honors it). Default False —
     # the normal path emits only when readiness targets are met.

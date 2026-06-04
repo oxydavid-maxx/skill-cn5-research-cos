@@ -242,6 +242,31 @@ def _route_after_clarify(state: GraphState) -> str:
     return "write_brief" if state["research_state"].clarify_converged else "clarify"
 
 
+_H7_MAJOR_DELTA = 2   # >= 2 new cells since last approval == "major re-decomposition"
+
+def node_plan_approval(state: GraphState) -> GraphState:
+    """P8 §5 H7 — human approves the task grid before expensive research. Prompts on
+    the FIRST cycle, and again only on a MAJOR re-decomposition (>= _H7_MAJOR_DELTA new
+    cells). Small re-ranks do NOT re-prompt. assume_brief short-circuits (no prompt)."""
+    rs = state["research_state"]
+    grid = getattr(rs, "task_grid", None)
+    n_cells = len(grid.cells) if grid else 0
+    last_n = state.get("_h7_approved_n")
+    if state.get("assume_brief"):
+        state["_h7_approved_n"] = n_cells
+        return {"research_state": rs, "_h7_approved_n": n_cells}
+    first = last_n is None
+    major = (last_n is not None) and (n_cells - last_n >= _H7_MAJOR_DELTA)
+    if not (first or major):
+        return {"research_state": rs}
+    answer = interrupt({"kind": "plan_approval",
+                        "cells": [c.id for c in grid.cells.values()] if grid else [],
+                        "first_cycle": first})
+    rs.steering_events.append({"kind": "plan-approval", "answer": answer})
+    state["_h7_approved_n"] = n_cells
+    return {"research_state": rs, "_h7_approved_n": n_cells}
+
+
 def node_orchestrator_plan(state: GraphState) -> GraphState:
     """P8 §3 ① — loop head. (Re)build the section-aware task grid from the brief +
     prior results + Albert challenges + coverage gaps."""
