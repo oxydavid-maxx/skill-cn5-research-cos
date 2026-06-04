@@ -23,7 +23,10 @@ Design contract (verified against escape-mrc's working client):
 - max_turns>=2 with a schema (tool_use + tool_result cycle).
 - Key-gated: `has_api_key()` lets callers skip live tests cleanly without a key.
 
-Cheap model by default (Haiku-tier) per the P2a fork decision F5.
+Default model is the Sonnet researcher tier (``claude-sonnet-4-6``, P8 E2);
+mechanical micro-steps (clarifier question-gen, slug/dedup) still pass an explicit
+cheaper model, and synthesis passes Opus explicitly. Overridable via the
+``CN5_COS_LLM_MODEL`` env var.
 
 Prompt caching (P2 acceleration Task 4): the installed claude-agent-sdk (0.1.63)
 exposes `ClaudeAgentOptions.system_prompt` as `str | SystemPromptPreset |
@@ -75,7 +78,7 @@ def _patch_anyio_no_console() -> bool:
 
 _patch_anyio_no_console()
 
-# Default cheap/Haiku-tier model for the clarification front-end.
+# Default model = the Sonnet researcher tier (P8 E2; env override wins).
 DEFAULT_MODEL = os.environ.get("CN5_COS_LLM_MODEL", "claude-sonnet-4-6")
 
 # P2 acceleration increment 2: hard ceiling on concurrent live `claude` sessions

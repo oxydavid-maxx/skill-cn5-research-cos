@@ -1,11 +1,12 @@
 """LangGraph StateGraph: full §18 node set, concurrent researcher fan-out, staged router.
 
-Canonical order (flow-diagram R2):
-  intake -> scope -> write_brief -> issue_expansion -> supervisor
+Canonical order (P8 flow-diagram):
+  intake -> scope -> clarify -> write_brief
+    -> orchestrator_plan -> plan_audit -> plan_approval -> supervisor
     -> research_fanout (asyncio.gather over top-K issues, each
         research -> source_critic -> compress; bounded by MAX_CONCURRENT) -> collect
     -> skeptic -> albert_audit -> artifact_update -> readiness_scoring
-    -> anti_premature -> cos_decision -> router
+    -> anti_premature -> cos_decision -> router (loop head = orchestrator_plan)
 
 P2 acceleration increment 2: the per-issue researchers run CONCURRENTLY
 (``run_research_fanout`` → ``asyncio.gather``) in one event loop, bounded by the

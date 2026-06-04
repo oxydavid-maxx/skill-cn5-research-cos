@@ -1,7 +1,8 @@
 """The §22 decision-memo synthesis brain (P5, cockpit-specific, narrow LLM).
 
-ONE ``call_structured`` (cheap ``haiku``) whose schema's properties are EXACTLY
-the 9 §22 section keys; it returns Chinese, meeting-ready prose per section,
+ONE ``call_structured`` (Opus, ``claude-opus-4-8`` — the deliverable, P8 E2) whose
+schema's properties are EXACTLY the 9 §22 section keys (plus ``findings``); it
+returns Chinese, meeting-ready prose per section,
 grounded in the run state's evidence + Albert challenges. The section SET, the
 blocker labels, the citation wiring, and the emission gates are all deterministic
 Python (``synthesis/memo.py`` + ``synthesis/gates.py``) — only the prose is LLM.

@@ -326,7 +326,7 @@ def build_brains(llm: str = "mock", *, research_source: str = "web",
             # real Albert (gate stage) when --albert real; --albert sim keeps the
             # simulator (the 391 prior tests stay green).
             deep_auditor=build_auditor(tier="deep", base=deep_base),
-            # P5 synthesis brain — real narrow LLM (one structured haiku call).
+            # P5 synthesis brain — real narrow LLM (one structured Opus call, P8 E2).
             synthesizer=RealSynthesizer(),
             # P8 H0 clarifier brain — real narrow LLM (one structured haiku call).
             clarifier=RealClarifier(),

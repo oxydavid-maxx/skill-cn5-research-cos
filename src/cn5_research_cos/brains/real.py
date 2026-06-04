@@ -12,8 +12,9 @@ graph (unchanged from P1); these nodes only emit structured data.
 - RealCompressor    : EvidenceBundle -> EvidenceBundle (light cited summary)
 - RealScorer        : state -> ReadinessScore
 
-Cheap `haiku` model everywhere (sdk_client default). No fabrication: the sdk
-wrapper raises LLMUnavailableError rather than inventing output.
+Uses the sdk_client default model (the Sonnet researcher tier, P8 E2) everywhere.
+No fabrication: the sdk wrapper raises LLMUnavailableError rather than inventing
+output.
 """
 from __future__ import annotations
 
