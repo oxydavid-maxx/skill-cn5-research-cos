@@ -78,6 +78,32 @@ def test_auto_high_risk_hard_stops(tmp_path):
     assert result["run_id"] == "autohi"  # resumable by run_id
 
 
+def test_run_auto_pauses_at_clarify_when_brief_not_converged(tmp_path):
+    """P8 H0 regression guard: the AFK run_auto path must NOT silently skip
+    clarification. With a non-converged brief and assume_brief=False, run_auto
+    PAUSES at the H0 clarify gate (it does not run the research loop)."""
+    rs = ResearchState(run_id="h0pause", original_question="switch PK", mode="auto")
+    # nothing pinned: no decision_criterion / success_form / research_brief / fallback
+    result = run_auto(rs, base_dir=str(tmp_path), llm="mock", run_id="h0pause",
+                      assume_brief=False)
+    assert result["paused"] is True
+    # the pause is the H0 clarify gate (not a later gate)
+    blob = str(result.get("ask")) + str(result.get("stop_reason")) + str(result.get("reason_kind"))
+    assert "clarify" in blob.lower() or "clarif" in blob.lower()
+
+
+def test_run_auto_proceeds_past_clarify_with_assume_brief(tmp_path):
+    """P8 H0: with assume_brief=True the AFK path proceeds past the clarify gate
+    (clarify is not the blocker) — it may pause LATER or complete, but the loop
+    progressed and clarify_converged is set."""
+    rs = ResearchState(run_id="h0skip", original_question="switch PK", mode="auto")
+    result = run_auto(rs, base_dir=str(tmp_path), llm="mock", run_id="h0skip",
+                      assume_brief=True)
+    # it ran the loop (did not pause at H0); it may pause LATER or complete, but
+    # clarify must not be the blocker and the grid/loop progressed
+    assert result["state"].clarify_converged is True
+
+
 def test_steer_event_reranks_next_iteration(tmp_path):
     """A cos steer event injected into the checkpointed state is consumed and
     re-ranks/branches on the next iteration (records the event)."""
