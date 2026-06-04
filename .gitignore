@@ -1,4 +1,31 @@
-# runtime artifacts
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Test / type caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Runtime state (research runs / checkpoints)
+runs/
+
+# Runtime artifacts (Albert subprocess inputs, local Claude state)
 albert_input_*.json
 .claude/
-runs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
