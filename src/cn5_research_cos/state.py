@@ -48,6 +48,10 @@ class GraphState(TypedDict, total=False):
     # (synchronous driver cannot pause); run_auto defaults it False (production
     # AFK pauses at H0 unless told otherwise).
     assume_brief: bool
+    # P8 §3 ②(b): the last grid signature audited by node_plan_audit, so a
+    # repeat plan-audit with an unchanged grid is skipped (no redundant flash
+    # Albert call). total=False → optional; absent on the first plan audit.
+    _last_plan_sig: str
     # P5: an explicit user command to emit the §22 memo even if the readiness
     # target is not met (the readiness emission gate honors it). Default False —
     # the normal path emits only when readiness targets are met.

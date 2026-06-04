@@ -33,6 +33,7 @@ SPEEDS = ("flash", "quick", "fast", "normal")
 # Base speed per stage label.
 _STAGE_BASE = {
     "sentinel": "flash",
+    "plan": "flash",
     "pre_synthesize": "fast",
     "final": "normal",
     "h6": "normal",

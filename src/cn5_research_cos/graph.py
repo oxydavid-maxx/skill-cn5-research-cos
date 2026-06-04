@@ -541,6 +541,34 @@ def node_albert_audit(state: GraphState) -> GraphState:
     return {"research_state": rs, "prereqs": prereqs}
 
 
+def _grid_signature(rs) -> str:
+    grid = getattr(rs, "task_grid", None)
+    if grid is None:
+        return ""
+    return "|".join(f"{c.id}:{c.status}" for c in sorted(grid.cells.values(), key=lambda x: x.id))
+
+
+def node_plan_audit(state: GraphState) -> GraphState:
+    """P8 §3 ②(b) — Albert audits the PLAN (flash). Skipped when the grid is
+    unchanged from the last audited signature."""
+    rs = state["research_state"]
+    sig = _grid_signature(rs)
+    last = state.get("_last_plan_sig")
+    if sig and sig == last:
+        return {"research_state": rs}
+    brains = _brains(state)
+    auditor = getattr(brains, "auditor", None)
+    if auditor is not None:
+        audit = auditor.audit(rs)
+        if audit is not None:
+            rs.last_audit = audit
+    # Record the signature back onto the input state so a same-dict re-call
+    # (the synchronous run_loop / test path) sees it and skips; ALSO return it
+    # as a channel update for the checkpointed LangGraph path.
+    state["_last_plan_sig"] = sig
+    return {"research_state": rs, "_last_plan_sig": sig}
+
+
 def node_artifact_update(state: GraphState) -> GraphState:
     """Consume compressed output, classify residual blockers, snapshot."""
     rs = state["research_state"]
