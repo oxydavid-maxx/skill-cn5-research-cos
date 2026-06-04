@@ -76,7 +76,7 @@ def _patch_anyio_no_console() -> bool:
 _patch_anyio_no_console()
 
 # Default cheap/Haiku-tier model for the clarification front-end.
-DEFAULT_MODEL = os.environ.get("CN5_COS_LLM_MODEL", "haiku")
+DEFAULT_MODEL = os.environ.get("CN5_COS_LLM_MODEL", "claude-sonnet-4-6")
 
 # P2 acceleration increment 2: hard ceiling on concurrent live `claude` sessions
 # per (model, tools, schema) key. Bounds parallel subprocess spawns so the

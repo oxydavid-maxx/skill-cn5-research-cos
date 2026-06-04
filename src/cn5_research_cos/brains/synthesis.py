@@ -112,7 +112,7 @@ class RealSynthesizer:
             "required_human_decisions, evidence_summary, risks_assumptions, "
             "recommended_next_action, appendix)."
         )
-        raw = call_structured(_SYSTEM, user, _SCHEMA, model="haiku")
+        raw = call_structured(_SYSTEM, user, _SCHEMA, model="claude-opus-4-8")
         # Normalize: always return findings + ALL 9 keys, missing -> "" so the
         # assembly never KeyErrors.
         return {k: str(raw.get(k, "") or "") for k in ALL_OUTPUT_KEYS}
