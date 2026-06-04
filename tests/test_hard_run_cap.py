@@ -67,11 +67,26 @@ def test_explicit_args_override_env(monkeypatch):
     assert wall == 30.0
 
 
+def test_wall_cap_defaults_to_8h_when_unset(monkeypatch):
+    monkeypatch.delenv("CN5_COS_MAX_WALL_S", raising=False)
+    monkeypatch.delenv("CN5_COS_MAX_COST_USD", raising=False)
+    cost, wall = run_cap.caps_from_args(None, None)
+    assert wall == 28800.0
+    assert cost is None
+
+
+def test_explicit_wall_overrides_default():
+    cost, wall = run_cap.caps_from_args(None, 60.0)
+    assert wall == 60.0
+
+
 def test_caps_absent_when_neither(monkeypatch):
     monkeypatch.delenv("CN5_COS_MAX_COST_USD", raising=False)
     monkeypatch.delenv("CN5_COS_MAX_WALL_S", raising=False)
     cost, wall = run_cap.caps_from_args(None, None)
-    assert cost is None and wall is None
+    # Cost stays opt-in (None); wall falls back to the 8h default (P8 E1).
+    assert cost is None
+    assert wall == run_cap.DEFAULT_MAX_WALL_S
 
 
 # --------------------------------------------------------------------------- #

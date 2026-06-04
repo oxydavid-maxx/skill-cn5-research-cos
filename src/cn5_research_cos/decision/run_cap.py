@@ -40,6 +40,9 @@ def cap_exceeded(metrics, *, max_cost_usd: float | None,
     return False, ""
 
 
+DEFAULT_MAX_WALL_S = 28800.0  # 8 hours — large research runs long (P8 E1)
+
+
 def _env_float(name: str) -> float | None:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
@@ -53,9 +56,13 @@ def _env_float(name: str) -> float | None:
 def caps_from_args(max_cost_usd: float | None,
                    max_wall_s: float | None) -> tuple[float | None, float | None]:
     """Resolve the effective (cost, wall) caps: explicit arg wins over the env var
-    (``CN5_COS_MAX_COST_USD`` / ``CN5_COS_MAX_WALL_S``); None when neither is set."""
+    (``CN5_COS_MAX_COST_USD`` / ``CN5_COS_MAX_WALL_S``). Cost stays opt-in (None when
+    neither is set); wall falls back to ``DEFAULT_MAX_WALL_S`` (8h) when unset so a
+    runaway run always has a hard ceiling (P8 E1)."""
     cost = max_cost_usd if max_cost_usd is not None else _env_float("CN5_COS_MAX_COST_USD")
     wall = max_wall_s if max_wall_s is not None else _env_float("CN5_COS_MAX_WALL_S")
+    if wall is None:
+        wall = DEFAULT_MAX_WALL_S
     return cost, wall
 
 
