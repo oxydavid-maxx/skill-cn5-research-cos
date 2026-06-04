@@ -65,6 +65,16 @@ def main(argv=None) -> int:
     ap.add_argument("--email", default="kuangyu@realtek.com")
     ap.add_argument("--no-email", action="store_true")
     ap.add_argument("--run-id", default=None)
+    ap.add_argument("--assume-brief", action="store_true",
+                    help="pass assume_brief=True to run_auto (short-circuits H0 clarify + H7 plan-approval gates so the AFK loop runs through)")
+    ap.add_argument("--max-cost-usd", type=float, default=5.0,
+                    help="hard cost cap (USD) for the run")
+    ap.add_argument("--max-wall-s", type=float, default=None,
+                    help="optional wall-clock cap (s); None → run_auto's 8h default applies")
+    ap.add_argument("--decision-criterion", default="competitor selection / RFQ scoring",
+                    help="pinned decision criterion (orchestrator reads this when --assume-brief)")
+    ap.add_argument("--success-form", default="vendor × spec_group public-spec PK table",
+                    help="pinned success form (orchestrator reads this when --assume-brief)")
     args = ap.parse_args(argv)
 
     topic_path = Path(args.topic)
@@ -78,13 +88,23 @@ def main(argv=None) -> int:
     metrics = RunMetrics()
     rs = ResearchState(run_id=run_id, original_question=question, mode="auto")
 
+    # When assuming the brief, pin the 4 criteria so the orchestrator decomposes
+    # well (it reads these) and H0/H7 are short-circuited by run_auto(assume_brief=True).
+    if args.assume_brief:
+        rs.decision_criterion = args.decision_criterion
+        rs.success_form = args.success_form
+        rs.research_brief = rs.research_brief or question  # the topic IS the scope
+        rs.fallback_behavior_if_human_unavailable = "public sources only; NDA-gated fields → N/A"
+
     t0 = time.time()
     err = None
     paused = False
     try:
         result = run_auto(rs, base_dir=str(base_dir), max_iterations=args.max_iterations,
                           now="t0", llm=args.llm, research_source=args.research_source,
-                          albert=args.albert, run_id=run_id, metrics=metrics, reporter=reporter)
+                          albert=args.albert, run_id=run_id, metrics=metrics, reporter=reporter,
+                          assume_brief=args.assume_brief, max_cost_usd=args.max_cost_usd,
+                          max_wall_s=args.max_wall_s)
         final = _state_of(result)
         paused = isinstance(result, dict) and bool(result.get("ask"))
     except Exception as e:  # always report what we have
@@ -108,12 +128,14 @@ def main(argv=None) -> int:
 
     issues = len(final.issue_map)
     challenges = len(final.albert_challenge_map)
+    grid_cells = len(final.task_grid.cells) if final.task_grid else 0
     summary = (
         f"DOGFOOD: {topic_path.name}\n"
         f"run_id={run_id}  llm={args.llm}  albert={args.albert}  max_iter={args.max_iterations}\n"
+        f"assume_brief={args.assume_brief}  max_cost=${args.max_cost_usd}\n"
         f"wall={wall:.0f}s  cost={metrics.summary_line()}\n"
         f"iterations={final.iteration_count}  issues={issues}  challenges={challenges}  "
-        f"paused={paused}  error={err}\n\n"
+        f"task_grid cells={grid_cells}  paused={paused}  error={err}\n\n"
         f"=== STAGE FLOW + TIMING ===\n{reporter.timing_table()}\n\n"
         f"=== readiness ===\n{getattr(final, 'readiness_score', None)}\n\n"
         f"=== §22 MEMO (explicit emit) ===\n{memo_txt[:12000]}\n\n"
