@@ -288,6 +288,57 @@ class SessionPool:
         brain = _schema_brain_label(schema, allowed_tools)
         return sess.ask(user, brain=brain)
 
+    def ask_oneshot(self, system: str, user: str, schema: dict | None, *,
+                    allowed_tools: list[str] | None, model: str | None,
+                    max_turns: int) -> dict[str, Any]:
+        """One-shot structured call that does NOT build a persistent session, but
+        STILL threads the pool's RunMetrics.
+
+        No-tools structured calls (orchestrator/synthesis/clarifier) HANG on the
+        persistent-session turn (`ClaudeSession.ask` -> `run_until_complete`
+        stalls), so they take the SAME one-shot path `_call` uses with no pool —
+        `_retrying(_once, ...)` over `asyncio.run(_query_structured(...))` — while
+        mirroring `ClaudeSession._finish_turn`'s record contract + None handling
+        so cost is still captured in the pool's metrics.
+        """
+        import time as _time
+
+        used_model = model or DEFAULT_MODEL
+
+        def _once() -> dict[str, Any]:
+            return asyncio.run(
+                _query_structured(
+                    system=system, user=user, schema=schema,
+                    model=used_model, timeout_sec=self._timeout,
+                    allowed_tools=allowed_tools, max_turns=max_turns,
+                )
+            )
+
+        t0 = _time.monotonic()
+        try:
+            result = _retrying(_once, self._attempts, 3.0, 60.0)()
+        except Exception as e:  # noqa: BLE001 - wrap transport/timeout failures
+            raise LLMUnavailableError(
+                f"SDK call failed: {type(e).__name__}: {e}"
+            ) from e
+        wall = _time.monotonic() - t0
+
+        if self._metrics is not None:
+            self._metrics.record(
+                cost_usd=result.get("cost_usd"), wall_s=wall,
+                brain=_schema_brain_label(schema, allowed_tools),
+                usage=result.get("usage"),
+            )
+
+        structured = result.get("structured")
+        if structured is None:
+            raise LLMUnavailableError(
+                f"SDK schema call returned no structured output "
+                f"(is_error={result.get('is_error')}, "
+                f"text_len={len(result.get('text', ''))})"
+            )
+        return structured
+
     def close(self) -> None:
         for sess in self._sessions.values():
             try:
@@ -344,12 +395,16 @@ def _call(
     """
     used_model = model or DEFAULT_MODEL
 
+    if _ACTIVE_POOL is not None and allowed_tools:
+        # tool-bearing (WebSearch) calls reuse a persistent session — the pool's purpose.
+        return _ACTIVE_POOL.ask(system, user, schema, allowed_tools=allowed_tools,
+                                model=used_model, max_turns=max_turns)
     if _ACTIVE_POOL is not None:
-        # Persistent-session path: the pool reuses one live `claude` across calls.
-        return _ACTIVE_POOL.ask(
-            system, user, schema, allowed_tools=allowed_tools,
-            model=used_model, max_turns=max_turns,
-        )
+        # no-tools structured calls (orchestrator/synthesis/clarifier) HANG on the
+        # persistent-session turn (run_until_complete stalls). Take the one-shot path
+        # but still thread the pool's RunMetrics so cost is captured.
+        return _ACTIVE_POOL.ask_oneshot(system, user, schema, allowed_tools=allowed_tools,
+                                        model=used_model, max_turns=max_turns)
 
     def _once() -> dict[str, Any]:
         return asyncio.run(

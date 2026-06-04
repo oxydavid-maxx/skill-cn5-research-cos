@@ -49,15 +49,28 @@ def _install(monkeypatch):
     _FakeSession.constructed = []
     monkeypatch.setattr(sdk_client, "ClaudeSession", _FakeSession)
 
+    # No-tools structured calls now take the one-shot path (ask_oneshot), so stub
+    # the async transport so those calls never hit a real LLM.
+    async def _fake_query(**_kw):
+        return {
+            "text": "", "structured": {"a": "ok"}, "is_error": False,
+            "cost_usd": 0.01, "usage": {"input_tokens": 10, "output_tokens": 2},
+        }
+
+    monkeypatch.setattr(sdk_client, "_query_structured", _fake_query)
+
 
 def test_pool_reuses_session_for_same_schema(monkeypatch):
+    """A persistent session is reused across same-key calls — asserted via the
+    TOOL-bearing (WebSearch) path, which is the path that legitimately uses a
+    persistent session under the fix."""
     _install(monkeypatch)
     m = RunMetrics()
     with sdk_client.use_session_pool(metrics=m):
-        sdk_client.call_structured("sysA", "u1", _SCHEMA_A)
-        sdk_client.call_structured("sysA", "u2", _SCHEMA_A)
-        sdk_client.call_structured("sysA", "u3", _SCHEMA_A)
-    # exactly ONE session constructed for the 3 same-schema/no-tool calls
+        sdk_client.call_structured_websearch("sysA", "u1", _SCHEMA_A)
+        sdk_client.call_structured_websearch("sysA", "u2", _SCHEMA_A)
+        sdk_client.call_structured_websearch("sysA", "u3", _SCHEMA_A)
+    # exactly ONE session constructed for the 3 same-schema/same-tool calls
     assert len(_FakeSession.constructed) == 1
     sess = _FakeSession.constructed[0]
     assert len(sess.asks) == 3
@@ -65,16 +78,17 @@ def test_pool_reuses_session_for_same_schema(monkeypatch):
 
 
 def test_pool_separates_by_schema_and_tools(monkeypatch):
+    """Distinct (tools, schema) keys map to distinct persistent sessions —
+    asserted with TOOL-bearing calls (the persistent-session path)."""
     _install(monkeypatch)
     with sdk_client.use_session_pool(metrics=RunMetrics()):
-        sdk_client.call_structured("sysA", "u", _SCHEMA_A)          # no-tool, schema A
-        sdk_client.call_structured("sysB", "u", _SCHEMA_B)          # no-tool, schema B
-        sdk_client.call_structured_websearch("sysW", "u", _SCHEMA_A)  # WebSearch, schema A
-    # 3 distinct keys -> 3 sessions
-    assert len(_FakeSession.constructed) == 3
-    # the websearch one has the WebSearch tool
+        sdk_client.call_structured_websearch("sysA", "u", _SCHEMA_A)  # WebSearch, schema A
+        sdk_client.call_structured_websearch("sysB", "u", _SCHEMA_B)  # WebSearch, schema B
+    # 2 distinct schema keys (same tool) -> 2 sessions
+    assert len(_FakeSession.constructed) == 2
+    # both carry the WebSearch tool
     tools = [s.allowed_tools for s in _FakeSession.constructed]
-    assert ["WebSearch"] in tools
+    assert tools == [["WebSearch"], ["WebSearch"]]
 
 
 def test_no_pool_falls_back_to_one_shot(monkeypatch):
@@ -92,9 +106,14 @@ def test_no_pool_falls_back_to_one_shot(monkeypatch):
 
 
 def test_pool_threads_metrics(monkeypatch):
+    """A no-tools call inside the pool records into the pool's RunMetrics — now via
+    the one-shot ask_oneshot path (no persistent session is built for it)."""
     _install(monkeypatch)
     m = RunMetrics()
     with sdk_client.use_session_pool(metrics=m):
         sdk_client.call_structured("sysA", "u", _SCHEMA_A)
-    # the constructed session got the metrics object (so .ask records into it)
-    assert _FakeSession.constructed[0].metrics is m
+    # no persistent session for the no-tools call...
+    assert _FakeSession.constructed == []
+    # ...but the metrics still got a record (cost threaded through ask_oneshot).
+    assert m.calls == 1
+    assert m.total_usd == 0.01
