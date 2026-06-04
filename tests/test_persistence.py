@@ -25,6 +25,7 @@ def test_langgraph_resume_continues_not_restarts(tmp_path):
         init = {
             "research_state": ResearchState(run_id="rg", original_question="q"),
             "base_dir": str(tmp_path), "now": "t0", "max_iterations": 6,
+            "assume_brief": True,  # P8: this test exercises resume, not the H0 clarify gate
         }
         out1 = app.invoke(init, config=cfg)
         first_iter = out1["research_state"].iteration_count

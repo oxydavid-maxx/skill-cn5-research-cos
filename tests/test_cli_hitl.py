@@ -48,7 +48,8 @@ def test_run_interactive_pauses_at_gate_and_resume_continues(tmp_path):
     rid = _seed_pull_state(tmp_path, "cliint")
     # cos run resumes the seeded run (state.json), runs until the pull gate pauses.
     r = runner.invoke(app, ["run", "--run-id", rid, "--resume-state",
-                            "--max-iterations", "6", "--allow-redirect"], env=env)
+                            "--max-iterations", "6", "--allow-redirect",
+                            "--assume-brief"], env=env)  # P8: tests pull gate pause, not the H0 clarify gate
     assert r.exit_code == 0, r.output
     assert "PAUSED" in r.output or "暫停" in r.output
     assert "cos resume" in r.output  # tells the human how to resume

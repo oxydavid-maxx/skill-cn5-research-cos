@@ -34,6 +34,7 @@ from .brains import build_brains
 from .llm import sdk_client
 from .decision import (anti_premature, branch_budget, convergence, exhaustion,
                        gate, risk, run_cap)
+from .decision import clarify as _clarify
 from .models import (ChallengeStatus, Decision, EvidenceBundle, HumanTask,
                      HumanTaskStatus, IssueStatus, IssueType, ResearchState)
 from .notify import notify_supplement_needed
@@ -214,6 +215,31 @@ def node_write_brief(state: GraphState) -> GraphState:
     if not rs.research_brief:
         _brains(state).brief_writer.write(rs)
     return {"research_state": rs}
+
+
+def node_clarify(state: GraphState) -> GraphState:
+    """H0 — multi-round Socratic clarification. Blocks until the 4 criteria are
+    pinned. The cockpit ASKS (clarifier brain); the human ANSWERS (interrupt).
+    AFK / auto default = pause here UNLESS the brief already converged or
+    `assume_brief` is set in state."""
+    rs = state["research_state"]
+    ok, missing = _clarify.clarify_converged(rs)
+    if ok:
+        rs.clarify_converged = True
+        return {"research_state": rs}
+    if state.get("assume_brief"):
+        rs.steering_events.append({"kind": "clarify-assumed", "missing": list(missing)})
+        rs.clarify_converged = True
+        return {"research_state": rs}
+    brains = _brains(state)
+    questions = brains.clarifier.ask(rs, missing) if getattr(brains, "clarifier", None) else [f"請補充：{m}" for m in missing]
+    answer = interrupt({"kind": "clarify", "questions": questions, "missing": missing})
+    rs.steering_events.append({"kind": "clarify-answer", "answer": answer, "for_missing": list(missing)})
+    return {"research_state": rs}
+
+
+def _route_after_clarify(state: GraphState) -> str:
+    return "write_brief" if state["research_state"].clarify_converged else "clarify"
 
 
 def node_issue_expansion(state: GraphState) -> GraphState:
@@ -959,7 +985,10 @@ def build_graph() -> StateGraph:
 
     g.add_edge(START, "intake")
     g.add_edge("intake", "scope")
-    g.add_edge("scope", "write_brief")
+    g.add_node("clarify", node_clarify)
+    g.add_edge("scope", "clarify")
+    g.add_conditional_edges("clarify", _route_after_clarify,
+                            {"clarify": "clarify", "write_brief": "write_brief"})
     g.add_edge("write_brief", "issue_expansion")
     g.add_edge("issue_expansion", "supervisor")
     # supervisor -> CONCURRENT researcher fan-out (asyncio.gather over the top-K
@@ -1039,6 +1068,7 @@ def run_loop(
     reporter=None,
     max_cost_usd: float | None = None,
     max_wall_s: float | None = None,
+    assume_brief: bool = True,
 ):
     """Run the convergence loop to completion.
 
@@ -1065,6 +1095,9 @@ def run_loop(
         "llm": llm,
         "research_source": research_source,
         "albert": albert,
+        # P8: non-checkpointed synchronous driver cannot pause at H0, so it runs
+        # straight through on the given brief (default True).
+        "assume_brief": assume_brief,
     }
     # P5b: thread the live-debate reporter (non-JSON-serializable, so only on the
     # non-checkpointed compile_graph() path). None → nodes emit nothing.
@@ -1157,6 +1190,7 @@ def run_auto(
     reporter=None,
     max_cost_usd: float | None = None,
     max_wall_s: float | None = None,
+    assume_brief: bool = False,
 ):
     """Overnight AUTO mode (spec §"auto mode" + Test 5).
 
@@ -1197,6 +1231,9 @@ def run_auto(
         "albert": albert,
         "mode": "auto",
         "enable_h6": False,
+        # P8: production AFK pauses at the H0 clarify gate unless the caller
+        # asserts the brief is already given (default False).
+        "assume_brief": assume_brief,
     }
 
     def _invoke_auto():

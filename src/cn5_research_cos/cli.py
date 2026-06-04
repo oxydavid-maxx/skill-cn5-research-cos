@@ -115,6 +115,8 @@ def run(
                                 help="即時把每個 stage 的辯論摘要（含 Albert 全文）串流到 stdout"),
     allow_redirect: bool = typer.Option(False, "--allow-redirect",
                                         help="允許在非互動式終端機（pipe/重導/背景）執行；辯論仍存於 runs/<id>/debate.md"),
+    assume_brief: bool = typer.Option(False, "--assume-brief/--no-assume-brief",
+                                      help="略過 H0 釐清 gate，視 brief 已給定直接跑（預設關閉：未釐清會停在 H0）"),
 ):
     """跑研究收斂迴圈（互動式）：跑到 gate interrupt 就暫停並印 ask payload + 如何 resume。
 
@@ -171,7 +173,7 @@ def run(
             "research_state": initial, "base_dir": base_dir, "now": now,
             "max_iterations": max_iterations, "llm": llm,
             "research_source": research_source, "albert": albert,
-            "mode": "interactive", "enable_h6": True,
+            "mode": "interactive", "enable_h6": True, "assume_brief": assume_brief,
         }
     else:
         if not question:
@@ -186,7 +188,7 @@ def run(
             "research_state": initial, "base_dir": base_dir, "now": now,
             "max_iterations": max_iterations, "llm": llm,
             "research_source": research_source, "albert": albert,
-            "mode": "interactive", "enable_h6": True,
+            "mode": "interactive", "enable_h6": True, "assume_brief": assume_brief,
         }
 
     from .llm import sdk_client
@@ -345,6 +347,8 @@ def run_auto_cmd(
                                 help="即時把每個 stage 的辯論摘要（含 Albert 全文）串流到 stdout"),
     allow_redirect: bool = typer.Option(False, "--allow-redirect",
                                         help="允許在非互動式終端機（pipe/重導/背景）執行；辯論仍存於 runs/<id>/debate.md"),
+    assume_brief: bool = typer.Option(False, "--assume-brief/--no-assume-brief",
+                                      help="略過 H0 釐清 gate，視 brief 已給定直接跑（預設關閉：未釐清會停在 H0）"),
 ):
     """隔夜 AUTO 模式：低風險 gate 自動套預設、高風險硬停（可 resume）；印每輪 + 停止原因。"""
     if llm not in ("mock", "real"):
@@ -375,7 +379,7 @@ def run_auto_cmd(
     result = run_auto(initial, base_dir=base_dir, max_iterations=max_iterations,
                       now=now, llm=llm, research_source=research_source,
                       albert=albert, default_priority=default_priority, run_id=rid,
-                      reporter=_reporter)
+                      reporter=_reporter, assume_brief=assume_brief)
     final = result["state"]
 
     console.rule(f"[bold]AUTO run {rid}[/bold]")

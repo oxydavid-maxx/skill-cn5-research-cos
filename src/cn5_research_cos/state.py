@@ -41,6 +41,13 @@ class GraphState(TypedDict, total=False):
     # H6 final-review interrupt is opt-in (CLI cos run sets it); the P1 run_loop
     # (no checkpointer) leaves it False so terminal stops don't pause.
     enable_h6: bool
+    # P8 H0 clarify gate: when True, node_clarify treats the brief as already
+    # given and passes straight through (no interrupt). MUST be declared here or
+    # LangGraph drops the init value after the first super-step (same drop-after-
+    # super-step trap documented for ``albert`` above). run_loop defaults it True
+    # (synchronous driver cannot pause); run_auto defaults it False (production
+    # AFK pauses at H0 unless told otherwise).
+    assume_brief: bool
     # P5: an explicit user command to emit the §22 memo even if the readiness
     # target is not met (the readiness emission gate honors it). Default False —
     # the normal path emits only when readiness targets are met.

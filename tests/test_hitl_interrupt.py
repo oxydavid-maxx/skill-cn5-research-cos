@@ -46,6 +46,7 @@ def test_interrupt_pauses_then_resumes_from_checkpoint(tmp_path):
             "research_state": _state_that_pulls(),
             "base_dir": str(tmp_path), "now": "t0", "max_iterations": 6,
             "llm": "mock", "mode": "interactive",
+            "assume_brief": True,  # P8: tests human_pull interrupt/resume, not the H0 clarify gate
         }
         out1 = app.invoke(init, config=cfg)
 

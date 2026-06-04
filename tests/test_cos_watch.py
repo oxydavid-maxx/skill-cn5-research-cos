@@ -43,7 +43,8 @@ def test_run_auto_persists_debate_md(tmp_path):
     env = {"CN5_COS_BASE_DIR": str(tmp_path)}
     r = runner.invoke(app, ["run-auto", "--question", "AI overnight?",
                             "--run-id", "rapersist", "--max-iterations", "6",
-                            "--allow-redirect"], env=env)
+                            "--allow-redirect",
+                            "--assume-brief"], env=env)  # P8: tests debate persistence, not the H0 clarify gate
     assert r.exit_code == 0, r.output
     debate = tmp_path / "rapersist" / "debate.md"
     assert debate.exists(), r.output
@@ -59,7 +60,8 @@ def test_run_interactive_persists_debate_md(tmp_path):
     env = {"CN5_COS_BASE_DIR": str(tmp_path)}
     r = runner.invoke(app, ["run", "--question", "AI overnight?", "--run-id",
                             "runpersist", "--max-iterations", "6",
-                            "--allow-redirect"], env=env)
+                            "--allow-redirect",
+                            "--assume-brief"], env=env)  # P8: tests debate persistence, not the H0 clarify gate
     assert r.exit_code == 0, r.output
     debate = tmp_path / "runpersist" / "debate.md"
     assert debate.exists(), r.output

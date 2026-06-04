@@ -14,7 +14,8 @@ def test_5_run_auto_multiple_iterations_audits_and_stops(tmp_path):
     """Test 5: run_auto over the stub loop runs multiple iterations, audits each,
     readiness updated, final state explains the stop reason — without pausing."""
     rs = ResearchState(run_id="auto5", original_question="AI 能否做隔夜研究?")
-    result = run_auto(rs, base_dir=tmp_path, max_iterations=8, now="t0", llm="mock")
+    result = run_auto(rs, base_dir=tmp_path, max_iterations=8, now="t0", llm="mock",
+                      assume_brief=True)  # P8: tests loop, not the H0 clarify gate
 
     final = result["state"]
     assert final.iteration_count >= 2, "auto mode should run multiple iterations"
@@ -45,7 +46,8 @@ def test_auto_low_risk_applies_default_and_records_steering_event(tmp_path):
         "options": ["A", "B", "C"], "ai_recommendation": "A",
         "default_if_no_response": "A", "consumed": False,
     })
-    result = run_auto(rs, base_dir=tmp_path, max_iterations=6, now="t0", llm="mock")
+    result = run_auto(rs, base_dir=tmp_path, max_iterations=6, now="t0", llm="mock",
+                      assume_brief=True)  # P8: tests low-risk pull, not the H0 clarify gate
     final = result["state"]
     assert result["paused"] is False
     auto_defaults = [e for e in final.steering_events if e.get("kind") == "auto-default"]
@@ -68,7 +70,8 @@ def test_auto_high_risk_hard_stops(tmp_path):
         "options": ["A", "B", "C"], "ai_recommendation": "A",
         "default_if_no_response": "A", "consumed": False,
     })
-    result = run_auto(rs, base_dir=tmp_path, max_iterations=6, now="t0", llm="mock")
+    result = run_auto(rs, base_dir=tmp_path, max_iterations=6, now="t0", llm="mock",
+                      assume_brief=True)  # P8: tests high-risk pull, not the H0 clarify gate
     assert result["paused"] is True, "high-risk pull must hard-stop in auto mode"
     assert result["ask"] is not None
     assert result["ask"]["options"] == ["A", "B", "C"]

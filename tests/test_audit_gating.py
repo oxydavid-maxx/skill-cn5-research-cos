@@ -42,6 +42,7 @@ def test_deep_audit_not_called_mid_loop_but_once_at_terminal_gate():
             "research_state": rs, "base_dir": "runs", "now": "t0",
             "max_iterations": 8, "llm": "mock", "mode": "interactive",
             "enable_h6": False, "brains": _brains_with_counting_deep(counter),
+            "assume_brief": True,  # P8: tests audit gating, not the H0 clarify gate
         },
         config={"recursion_limit": 200},
     )
@@ -76,7 +77,8 @@ def test_deep_audit_runs_before_high_risk_pull(tmp_path):
         # state, which node_deep_audit increments only at the gate.
         out = app.invoke(
             {"research_state": rs, "base_dir": str(tmp_path), "now": "t0",
-             "max_iterations": 6, "llm": "mock", "mode": "interactive"},
+             "max_iterations": 6, "llm": "mock", "mode": "interactive",
+             "assume_brief": True},  # P8: tests audit gating, not the H0 clarify gate
             config=cfg,
         )
         assert "__interrupt__" in out  # paused at the pull gate
@@ -111,7 +113,8 @@ def test_low_risk_pull_skips_deep_audit(tmp_path):
         cfg = {"configurable": {"thread_id": "agl"}, "recursion_limit": 200}
         out = app.invoke(
             {"research_state": rs, "base_dir": str(tmp_path), "now": "t0",
-             "max_iterations": 6, "llm": "mock", "mode": "interactive"},
+             "max_iterations": 6, "llm": "mock", "mode": "interactive",
+             "assume_brief": True},  # P8: tests audit gating, not the H0 clarify gate
             config=cfg,
         )
         assert "__interrupt__" in out

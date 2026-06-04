@@ -80,7 +80,8 @@ def test_converging_run_terminates_open_to_zero():
     out = app.invoke(
         {"research_state": rs, "base_dir": "runs", "now": "t0",
          "max_iterations": 12, "llm": "mock", "mode": "interactive",
-         "enable_h6": False, "brains": _brains_with_auditor(_ConvergingAuditor())},
+         "enable_h6": False, "brains": _brains_with_auditor(_ConvergingAuditor()),
+         "assume_brief": True},  # P8: tests convergence, not the H0 clarify gate
         config={"recursion_limit": 200},
     )
     final = out["research_state"]
@@ -111,7 +112,8 @@ def test_unanswerable_critical_challenge_escalates_to_human_gate(tmp_path, monke
         cfg = {"configurable": {"thread_id": "esc"}, "recursion_limit": 200}
         out = app.invoke(
             {"research_state": rs, "base_dir": str(tmp_path), "now": "t0",
-             "max_iterations": 8, "llm": "mock", "mode": "interactive"},
+             "max_iterations": 8, "llm": "mock", "mode": "interactive",
+             "assume_brief": True},  # P8: tests escalation, not the H0 clarify gate
             config=cfg,
         )
         # It paused at a human gate rather than spinning forever.
