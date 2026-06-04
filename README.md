@@ -29,6 +29,75 @@ synthesize** — until the work is ready for leadership-level challenge and deci
 
 ---
 
+## 1.5 The full research flow
+
+> Status tags: **[now]** = built · **[P8]** = designed in
+> [`docs/spec/2026-06-04-phase8-socratic-orchestration-quality-design.md`](docs/spec/2026-06-04-phase8-socratic-orchestration-quality-design.md),
+> not yet implemented · **[NET-NEW]** = our strengthening beyond typical SOTA
+> (ODR / GPT-Researcher / Anthropic / WebWeaver / WebDART), honestly labelled.
+
+```
+ INTAKE
+   │
+   ▼
+ H0 — SOCRATIC CLARIFICATION   [P8 multi-round; now: cos clarify multi-turn]
+   · the cockpit ASKS, the human ANSWERS — until all 4 are pinned:
+       purpose / decision-anchor · scope in-out · success-form · constraints (+ existing material)
+   · AFK → PAUSE (opt-in: --assume-brief / best-effort to run on stated assumptions)
+   ▼
+ WRITE BRIEF   (locked by the dialogue: brief + decision-criterion + success-form)
+   │
+   ▼
+┌── OUTER ORCHESTRATION LOOP (reused every cycle; loop head = orchestrator) ──────────┐
+│ ① PLAN / DECOMPOSE   [P8]   build/update the task grid: vendor × spec-group,         │
+│    each cell = a report row + {objective, output-format, tools, boundaries};         │
+│    input = prior results + prior Albert challenges + coverage gaps  (adaptive)       │
+│ ② REFLECT + AUDIT                                                                    │
+│    (a) self-reflect: which cells next?                       [P8]                    │
+│    (b) Albert plan-audit (flash; skipped if plan unchanged)  [P8 · NET-NEW]          │
+│    (c) H7 human plan-approval (first cycle + major re-plan)  [P8]                    │
+│ ③ DISPATCH — supervisor picks top-K cells → parallel sub-agents (own context): [now] │
+│       research (web / internal-doc) → reflect gaps → source-critic → compress        │
+│ ④ COLLECT + skeptic counter                                  [now]                   │
+│ ⑤ AUDIT RESULTS — Albert (quality / drift) → challenges feed next ① [now · NET-NEW] │
+│ ⑥ READINESS / DECIDE                                         [now; P8 loops to ①]    │
+│    ├ converged (grid covered + Albert satisfied) ───────────► exit → synthesize      │
+│    ├ cap hit (8h / cost) ───────────────────────────────────► exit (degraded-honest)│
+│    ├ H3 needs internal data ──► HumanTask, continue adjacent  [now, non-blocking]    │
+│    ├ critical claim unverifiable ──► supplement email (once/run) + continue [now]    │
+│    ├ H1 / H2 / H5 high-risk or all-blocked ─────────────────► PAUSE + email [now]    │
+│    └ else ──────────────────────────────────────────────────► re-plan (back to ①)   │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+   │   ◄── H4 — `cos steer <run>` : redirect / drop material, ANYTIME, non-blocking → next cycle
+   ▼
+ H6 — FINAL REVIEW   (confirm / revise before synthesize)     [now]
+   ▼
+ SYNTHESIZE   (section-aware: each cell → a report row; findings-first)   [P8: Opus]
+   ▼
+ CITE   (verbatim ≥0.85 / flatten-to-primary; unverified-critical → supplement, never faked)  [now]
+   ▼
+ DELIVER — findings-first cited report  (one email)
+```
+
+**HITL gates (human-in-the-loop) — H0–H6 unchanged, H7 new in P8:**
+
+| Gate | Meaning | Where | Blocking |
+|---|---|---|---|
+| **H0** preflight / Socratic clarify | pin purpose·scope·success·constraints | front | yes |
+| **H1** pull-direction | direction unclear → pull human (high-risk) | loop ⑥ | yes |
+| **H2** call-decision | a decision needs the human | loop ⑥ | yes |
+| **H3** push-human | needs internal data → HumanTask, continue | loop ⑥ | no |
+| **H4** ad-hoc steering | `cos steer` → next cycle re-ranks / branches | anytime | no |
+| **H5** call-help | hard blocker → interrupt (even in auto) | loop ⑥ | yes |
+| **H6** final-review | confirm / revise before synthesize | exit | yes |
+| **H7** plan-approval **[P8]** | OK the task-grid before expensive research | loop ②(c) | first cycle |
+
+**Caps + model tier:** the loop runs up to **8h** wall (`CN5_COS_MAX_WALL_S`, P8 default 28800) and a cost cap (`CN5_COS_MAX_COST_USD`), and **does not stop early while a high-impact cell is still researchable**. Model tier **[P8]**: **Sonnet** researcher (PhD student) · **Opus** synthesis · Albert auditor **Opus** (professor) · haiku for mechanical micro-steps.
+
+The heavy human steering is **up front (H0 Socratic)**; inside the loop the human is **always able to steer (H4) but is not interrogated every cycle** — the cockpit only reaches out on a genuine gap (H3 / supplement / H1·H2·H5). This avoids both inbox-flood and an 8-hour idle.
+
+---
+
 ## 2. Setup
 
 ```bash
