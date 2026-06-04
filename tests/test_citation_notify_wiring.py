@@ -10,8 +10,8 @@ from __future__ import annotations
 import cn5_research_cos.graph as graph
 from cn5_research_cos.brains import build_brains
 from cn5_research_cos.models import (
-    AuditResult, AuditVerdict, Claim, EvidenceBundle, IssueNode, IssueStatus,
-    IssueType, ReadinessScore, ResearchState, Risk, Source,
+    AuditResult, AuditVerdict, Claim, EvidenceBundle, HumanTask, HumanTaskStatus,
+    IssueNode, IssueStatus, IssueType, ReadinessScore, ResearchState, Risk, Source,
 )
 
 
@@ -116,3 +116,22 @@ def test_no_notify_when_nothing_to_supplement(monkeypatch):
     state = {"research_state": rs, "llm": "mock", "explicit_emit": True}
     graph._build_and_gate_memo(state, rs)
     assert calls == []
+
+
+def test_consolidated_email_includes_internal_data_tasks(monkeypatch):
+    calls = []
+    monkeypatch.setattr(graph, "notify_supplement_needed",
+                        lambda run_id, items, **kw: calls.append(list(items)) or True)
+    rs = ResearchState(run_id="r", original_question="q")
+    rs.last_audit = AuditResult(verdict=AuditVerdict.exhausted, degraded=False,
+                                premature_end_risk=Risk.low, research_drift_risk=Risk.low)
+    rs.readiness_score = ReadinessScore(albert_challenge_readiness=5, decision_readiness=5,
+        research_exhaustion_readiness=5, human_bottleneck_clarity=5, should_continue=False)
+    rs.human_tasks["HT-1"] = HumanTask(id="HT-1", task_title="提供內部資料：X",
+        requested_input="內部 datasheet", why_needed="public 查不到",
+        blocking_question="X", priority=5, can_continue_without_it=True,
+        status=HumanTaskStatus.open)
+    graph._build_and_gate_memo({"research_state": rs, "llm": "mock",
+                                "explicit_emit": True, "base_dir": "runs"}, rs)
+    assert len(calls) == 1
+    assert any("內部" in t.requested_input or "datasheet" in t.requested_input for t in calls[0])

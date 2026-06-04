@@ -39,21 +39,47 @@ DEFAULT_RECIPIENT = "kuangyu@realtek.com"
 SendFn = Callable[..., None]
 
 
+def _is_internal_data_item(t: HumanTask) -> bool:
+    """Classify a consolidated item as an H3 internal-data ask (vs a B-4 unverified-
+    critical claim). Same textual signal used by the graph wiring: ``內部`` appears
+    across the task's user-facing fields (``node_human_push`` builds it with
+    ``requested_input='內部資料 / 受限文件'`` / ``task_title='提供內部資料：…'``)."""
+    blob = f"{t.requested_input}\n{t.why_needed}\n{t.task_title}"
+    return "內部" in blob
+
+
 def build_supplement_email(run_id: str, items: Sequence[HumanTask]) -> str:
     """Compose the (pure) email body: run_id + each item's need + copy-paste
-    supplement commands + the reference-folder drop instruction. Deterministic."""
+    supplement commands + the reference-folder drop instruction. Deterministic.
+
+    The consolidated email (P8 §5) groups items under two headings:
+      * ``需驗證補充（決策關鍵主張）`` — B-4 unverified-critical claims, and
+      * ``需內部資料`` — H3 internal/restricted-data asks.
+    Each item keeps clear per-item context so an ambiguous classification is still
+    actionable."""
+    b4 = [t for t in items if not _is_internal_data_item(t)]
+    internal = [t for t in items if _is_internal_data_item(t)]
     lines = [
-        f"研究 run {run_id} 有 {len(items)} 項『決策關鍵但無法以引用驗證』的主張，"
-        "需要您補充。系統並未捏造，也沒有停下來等您——迴圈已繼續，這些項目目前只列在"
-        "memo 的『不能說 / 需人類決策』區，標記為 needs human supplement，不會當作事實。",
+        f"研究 run {run_id} 有 {len(items)} 項需要您補充（{len(b4)} 項需驗證補充、"
+        f"{len(internal)} 項需內部資料）。系統並未捏造，也沒有停下來等您——迴圈已繼續，"
+        "這些項目目前只列在 memo 的『不能說 / 需人類決策』區，標記為 needs human "
+        "supplement，不會當作事實。",
         "",
-        "需要補充的項目：",
     ]
-    for i, t in enumerate(items, 1):
-        need = t.requested_input or t.task_title or t.blocking_question
-        lines.append(f"  {i}. {need}")
-        if t.why_needed:
-            lines.append(f"     （為何需要：{t.why_needed}）")
+
+    def _emit(heading: str, group: Sequence[HumanTask]) -> None:
+        if not group:
+            return
+        lines.append(heading + "：")
+        for i, t in enumerate(group, 1):
+            need = t.requested_input or t.task_title or t.blocking_question
+            lines.append(f"  {i}. {need}")
+            if t.why_needed:
+                lines.append(f"     （為何需要：{t.why_needed}）")
+        lines.append("")
+
+    _emit("需驗證補充（決策關鍵主張）", b4)
+    _emit("需內部資料", internal)
     lines += [
         "",
         "如何補充（擇一，可重複）：",

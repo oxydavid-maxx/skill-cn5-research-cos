@@ -856,20 +856,49 @@ def _supplement_email_sent(rs: ResearchState) -> bool:
     return any(e.get("kind") == _NOTIFY_EVENT_KIND for e in rs.steering_events)
 
 
+def is_internal_data_task(t) -> bool:
+    """True iff ``t`` is an H3 ``node_human_push`` internal-data ask. The robust
+    signal is textual: ``node_human_push`` builds the task with
+    ``requested_input='內部資料 / 受限文件'``, ``task_title='提供內部資料：…'`` and a
+    ``why_needed`` mentioning 內部資料 — i.e. the substring ``內部`` appears across its
+    user-facing fields. (HumanTask has no issue link, so 內部 is the reliable marker.)
+    Only OPEN tasks are still outstanding; done/cancelled ones are not re-emailed."""
+    if t.status != HumanTaskStatus.open:
+        return False
+    blob = f"{t.requested_input}\n{t.why_needed}\n{t.task_title}"
+    return "內部" in blob
+
+
 def _notify_needs_supplement(state: GraphState, rs: ResearchState, memo) -> None:
-    """Email the user AT MOST ONCE PER RUN about unverified-critical (needs-supplement)
-    items — a single consolidated heads-up, NOT one email per iteration. The full,
-    growing list lives in the HumanTasks (`cos show <run_id>`) and the §22 memo's
+    """Email the user AT MOST ONCE PER RUN with a CONSOLIDATED supplement heads-up
+    (P8 §5) covering BOTH kinds in a single email:
+
+      * B-4 needs-supplement: decision-critical claims the citation policy could not
+        verify (``memo.needs_supplement``), and
+      * H3 internal-data: open ``node_human_push`` HumanTasks that need internal /
+        restricted data external research cannot reach.
+
+    Deduped by HumanTask ``id``. NOT one email per iteration — the full, growing list
+    lives in the HumanTasks (`cos show <run_id>`) and the §22 memo's
     Required-Human-Decisions / What-We-Cannot-Say sections. Fail-soft (the notifier
     never raises); the loop always continues."""
     items_text = list(getattr(memo, "needs_supplement", []) or [])
-    if not items_text:
+    # B-4: unverified-critical claims routed to needs_supplement map back to the
+    # HumanTask(s) whose requested_input is one of those texts.
+    b4_tasks = [t for t in rs.human_tasks.values() if t.requested_input in items_text]
+    # H3: open internal-data HumanTasks created by node_human_push.
+    h3_tasks = [t for t in rs.human_tasks.values() if is_internal_data_task(t)]
+    # Consolidate, deduped by id (a task could match both signals).
+    tasks: list = []
+    seen: set[str] = set()
+    for t in b4_tasks + h3_tasks:
+        if t.id not in seen:
+            seen.add(t.id)
+            tasks.append(t)
+    if not tasks:
         return
     if _supplement_email_sent(rs):
         return  # already emailed once this run — do NOT re-flood the inbox
-    tasks = [t for t in rs.human_tasks.values() if t.requested_input in items_text]
-    if not tasks:
-        return
     base_dir = state.get("base_dir", "runs") if isinstance(state, dict) else "runs"
     notify_supplement_needed(rs.run_id, tasks, base_dir=str(base_dir))
     rs.steering_events.append({"kind": _NOTIFY_EVENT_KIND, "items": items_text})
