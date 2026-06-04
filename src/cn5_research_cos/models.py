@@ -125,6 +125,38 @@ class IssueNode(BaseModel):
     last_audited: str | None = None
 
 
+class CellStatus(str, Enum):
+    open = "open"
+    partial = "partial"
+    covered = "covered"
+    blocked = "blocked"      # NDA / internal-only
+    na = "na"                # no public data exists
+
+
+class TaskCell(BaseModel):
+    id: str
+    vendor: str
+    spec_group: str
+    part_number: str | None = None
+    objective: str
+    output_format: str = ""
+    tools: list[str] = Field(default_factory=lambda: ["web"])
+    boundaries: str = ""
+    status: CellStatus = CellStatus.open
+    impact: int = 3
+    evidence_refs: list[str] = Field(default_factory=list)
+    notes: str = ""
+
+
+class TaskGrid(BaseModel):
+    axes: list[str] = Field(default_factory=lambda: ["vendor", "spec_group"])
+    cells: dict[str, TaskCell] = Field(default_factory=dict)
+
+    def open_high_impact_cells(self, *, min_impact: int = 4) -> list[TaskCell]:
+        return [c for c in self.cells.values()
+                if c.status in (CellStatus.open, CellStatus.partial) and c.impact >= min_impact]
+
+
 class AlbertChallenge(BaseModel):
     id: str
     challenge: str
@@ -305,6 +337,12 @@ class ResearchState(BaseModel):
     default_research_priority: str | None = None
     fallback_behavior_if_human_unavailable: str | None = None
     research_brief: str | None = None
+
+    # P8 (H0): decision criterion + success form + clarify convergence + task grid
+    decision_criterion: str | None = None
+    success_form: str | None = None
+    clarify_converged: bool = False
+    task_grid: TaskGrid | None = None
 
     # live artifacts
     issue_map: dict[str, IssueNode] = Field(default_factory=dict)

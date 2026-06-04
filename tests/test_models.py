@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 from cn5_research_cos.models import (IssueNode, IssueType, IssueStatus, AuditResult,
-    AuditVerdict, ResearchState, EvidenceBundle)
+    AuditVerdict, ResearchState, EvidenceBundle, TaskCell, TaskGrid, CellStatus)
 
 
 def test_issue_round_trip():
@@ -34,3 +34,21 @@ def test_audit_r2_fields():
 def test_evidence_coverage_gaps():
     e = EvidenceBundle(query="q")
     assert e.coverage_gaps == []
+
+
+def test_research_state_has_p8_fields():
+    rs = ResearchState(run_id="r", original_question="q")
+    assert rs.decision_criterion is None
+    assert rs.success_form is None
+    assert rs.clarify_converged is False
+    assert rs.task_grid is None
+
+
+def test_task_grid_cells_and_coverage():
+    grid = TaskGrid(axes=["vendor", "spec_group"])
+    grid.cells["NXP|fabric"] = TaskCell(
+        id="NXP|fabric", vendor="NXP", spec_group="fabric",
+        objective="拉齊 NXP switch fabric 規格", status=CellStatus.open, impact=5)
+    assert grid.open_high_impact_cells(min_impact=4)[0].id == "NXP|fabric"
+    grid.cells["NXP|fabric"].status = CellStatus.covered
+    assert grid.open_high_impact_cells(min_impact=4) == []
