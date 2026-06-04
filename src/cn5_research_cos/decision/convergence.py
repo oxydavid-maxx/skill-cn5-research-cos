@@ -111,6 +111,14 @@ def has_unresolved_high_impact(state: ResearchState) -> bool:
     )
 
 
+def grid_converged(state) -> bool:
+    """P8 §4 — converged iff the grid exists and has no open high-impact cell."""
+    grid = getattr(state, "task_grid", None)
+    if grid is None:
+        return False
+    return not grid.open_high_impact_cells(min_impact=HIGH_IMPACT_CONF)
+
+
 def gate_emission(state: ResearchState, decision: Decision) -> Decision:
     """Refuse a synthesize/terminal emission while a high-impact challenge is
     unresolved — force back to ``continue_research``. Non-emission decisions pass

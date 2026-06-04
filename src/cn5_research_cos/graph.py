@@ -242,6 +242,19 @@ def _route_after_clarify(state: GraphState) -> str:
     return "write_brief" if state["research_state"].clarify_converged else "clarify"
 
 
+def node_orchestrator_plan(state: GraphState) -> GraphState:
+    """P8 §3 ① — loop head. (Re)build the section-aware task grid from the brief +
+    prior results + Albert challenges + coverage gaps."""
+    rs = state["research_state"]
+    _consume_steer_events(rs)
+    brains = _brains(state)
+    if brains.orchestrator is not None:
+        rs.task_grid = brains.orchestrator.plan(rs)
+    _report(state, "orchestrator",
+            getattr(_obs, "render_orchestrator", None) or (lambda *a, **k: None), rs)
+    return {"research_state": rs}
+
+
 def node_issue_expansion(state: GraphState) -> GraphState:
     rs = state["research_state"]
     now = state.get("now", "t")
