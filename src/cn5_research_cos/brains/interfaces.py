@@ -75,6 +75,12 @@ class Synthesizer(Protocol):
     def write_sections(self, state: ResearchState) -> dict[str, str]: ...
 
 
+@runtime_checkable
+class Orchestrator(Protocol):
+    # P8 §3 ① — builds/updates the section-aware task grid each cycle.
+    def plan(self, state) -> "TaskGrid": ...
+
+
 @dataclass
 class Brains:
     clarify_gate: ClarifyGate
@@ -97,3 +103,6 @@ class Brains:
     # P8 H0 clarifier brain — Socratic question-gen for missing criteria.
     # Defaults to None; build_brains wires MockClarifier / RealClarifier.
     clarifier: "Clarifier | None" = None
+    # P8 §3 ① orchestrator brain — builds/updates the section-aware task grid.
+    # Defaults to None; build_brains wires MockOrchestrator / RealOrchestrator.
+    orchestrator: "Orchestrator | None" = None

@@ -19,6 +19,7 @@ from ..models import (AlbertChallenge, AuditResult, AuditVerdict, ChallengeStatu
                       IssueStatus, IssueType, ReadinessScore, ResearchState, Risk,
                       Source, SourceQuality, SourceType)
 from .clarifier import MockClarifier, RealClarifier
+from .orchestrator import MockOrchestrator, RealOrchestrator
 from .interfaces import Brains
 
 MAX_CONCURRENT = 4
@@ -210,6 +211,8 @@ def build_mock_brains() -> Brains:
         synthesizer=MockSynthesizer(),
         # P8 H0 clarifier brain — deterministic mock (zero LLM).
         clarifier=MockClarifier(),
+        # P8 §3 ① orchestrator brain — deterministic mock (zero LLM).
+        orchestrator=MockOrchestrator(),
     )
 
 
@@ -327,6 +330,8 @@ def build_brains(llm: str = "mock", *, research_source: str = "web",
             synthesizer=RealSynthesizer(),
             # P8 H0 clarifier brain — real narrow LLM (one structured haiku call).
             clarifier=RealClarifier(),
+            # P8 §3 ① orchestrator brain — real narrow LLM (one structured call).
+            orchestrator=RealOrchestrator(),
         )
         return _apply_research_source(real, research_source)
     raise NotImplementedError(
