@@ -1033,9 +1033,20 @@ def _route(state: GraphState) -> str:
     if run_cap.cap_hit_now():
         rs.stop_reason = run_cap.cap_reason_now()
         return "deep_audit"
-    # Terminal / synthesize / iteration-ceiling → run the Tier-2 deep audit, then
-    # the H6 review seam, then END.
-    if decision in (Decision.terminal_stop, Decision.synthesize) or rs.iteration_count >= max_it:
+    # HARD iteration ceiling — always wraps up (prevents infinite loops; bounded
+    # tests still terminate). Checked BEFORE the E1 override so it always wins.
+    if rs.iteration_count >= max_it:
+        return "deep_audit"
+    # E1 (Task 15): a SOFT early stop (synthesize / terminal) must NOT wrap up while
+    # there is still an open high-impact grid cell AND we are under all hard bounds
+    # (cap already checked above, ceiling checked above) AND the grid is not
+    # converged. "還有可研究的高影響格子就不早停" — keep researching instead.
+    decision_is_soft_stop = decision in (Decision.terminal_stop, Decision.synthesize)
+    if decision_is_soft_stop:
+        researchable = bool(getattr(rs, "task_grid", None)) and bool(
+            rs.task_grid.open_high_impact_cells(min_impact=4))
+        if researchable and not convergence.grid_converged(rs):
+            return "orchestrator_plan"
         return "deep_audit"
     if decision == Decision.pull_human:
         # A HIGH-risk pull runs the deep audit first; a low-risk pull skips it.
@@ -1227,8 +1238,18 @@ def run_loop(
     cost_cap, wall_cap = run_cap.caps_from_args(max_cost_usd, max_wall_s)
     cap_token = run_cap.publish_cap(metrics, max_cost_usd=cost_cap, max_wall_s=wall_cap)
 
+    # E1 (Task 15): with the soft-early-stop override active, a run keeps researching
+    # while an open high-impact grid cell exists (cell coverage is not yet auto-wired,
+    # so the grid rarely converges). ``max_iterations`` is the HARD backstop — but
+    # LangGraph's own ``recursion_limit`` must sit ABOVE the worst-case node-step count
+    # of that many iterations, or it (not the iteration ceiling) would pre-empt the
+    # loop with a GraphRecursionError. The loop body is ~13 node-steps/iteration plus a
+    # fixed preamble; 50 + 20*max_iterations leaves generous headroom for pull/branch
+    # detours so the iteration ceiling always fires first.
+    recursion_limit = 50 + 20 * max(1, int(max_iterations))
+
     def _invoke():
-        return app.invoke(init, config={"recursion_limit": 100})
+        return app.invoke(init, config={"recursion_limit": recursion_limit})
 
     try:
         if llm == "real":
