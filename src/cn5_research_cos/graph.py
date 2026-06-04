@@ -227,13 +227,20 @@ def node_clarify(state: GraphState) -> GraphState:
     ok, missing = _clarify.clarify_converged(rs)
     if ok:
         rs.clarify_converged = True
+        _report(state, "clarify", _obs.render_clarify, rs)
         return {"research_state": rs}
     if state.get("assume_brief"):
         rs.steering_events.append({"kind": "clarify-assumed", "missing": list(missing)})
         rs.clarify_converged = True
+        _report(state, "clarify", _obs.render_clarify, rs)
         return {"research_state": rs}
     brains = _brains(state)
     questions = brains.clarifier.ask(rs, missing) if getattr(brains, "clarifier", None) else [f"請補充：{m}" for m in missing]
+    # Record the questions on a steering event so render_clarify can surface them,
+    # then stream the clarify block BEFORE interrupt() suspends the run (the human
+    # must SEE the questions before the pause).
+    rs.steering_events.append({"kind": "clarify-ask", "questions": questions, "missing": list(missing)})
+    _report(state, "clarify", _obs.render_clarify, rs)
     answer = interrupt({"kind": "clarify", "questions": questions, "missing": missing})
     rs.steering_events.append({"kind": "clarify-answer", "answer": answer, "for_missing": list(missing)})
     return {"research_state": rs}
@@ -255,11 +262,20 @@ def node_plan_approval(state: GraphState) -> GraphState:
     last_n = state.get("_h7_approved_n")
     if state.get("assume_brief"):
         state["_h7_approved_n"] = n_cells
+        rs.steering_events.append({"kind": "plan-assumed", "first_cycle": last_n is None,
+                                   "cells": [c.id for c in grid.cells.values()] if grid else []})
+        _report(state, "plan_approval", _obs.render_plan_approval, rs)
         return {"research_state": rs, "_h7_approved_n": n_cells}
     first = last_n is None
     major = (last_n is not None) and (n_cells - last_n >= _H7_MAJOR_DELTA)
     if not (first or major):
+        _report(state, "plan_approval", _obs.render_plan_approval, rs)
         return {"research_state": rs}
+    # Stream the plan BEFORE interrupt() suspends the run (the human must SEE the
+    # cells being presented for approval before the pause).
+    rs.steering_events.append({"kind": "plan-approval", "first_cycle": first,
+                               "cells": [c.id for c in grid.cells.values()] if grid else []})
+    _report(state, "plan_approval", _obs.render_plan_approval, rs)
     answer = interrupt({"kind": "plan_approval",
                         "cells": [c.id for c in grid.cells.values()] if grid else [],
                         "first_cycle": first})
@@ -285,8 +301,7 @@ def node_orchestrator_plan(state: GraphState) -> GraphState:
         expander.expand(rs, now=state.get("now", "t"))
     if brains.orchestrator is not None:
         rs.task_grid = brains.orchestrator.plan(rs)
-    _report(state, "orchestrator",
-            getattr(_obs, "render_orchestrator", None) or (lambda *a, **k: None), rs)
+    _report(state, "orchestrator", _obs.render_orchestrator, rs)
     return {"research_state": rs}
 
 
@@ -590,6 +605,7 @@ def node_plan_audit(state: GraphState) -> GraphState:
     sig = _grid_signature(rs)
     last = state.get("_last_plan_sig")
     if sig and sig == last:
+        _report(state, "plan_audit", _obs.render_plan_audit, rs)
         return {"research_state": rs}
     brains = _brains(state)
     auditor = getattr(brains, "auditor", None)
@@ -601,6 +617,7 @@ def node_plan_audit(state: GraphState) -> GraphState:
     # (the synchronous run_loop / test path) sees it and skips; ALSO return it
     # as a channel update for the checkpointed LangGraph path.
     state["_last_plan_sig"] = sig
+    _report(state, "plan_audit", _obs.render_plan_audit, rs)
     return {"research_state": rs, "_last_plan_sig": sig}
 
 

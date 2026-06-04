@@ -287,3 +287,108 @@ def render_decision(decision: "Decision", rationale: str = "") -> str:
     if rationale:
         lines.append(f"rationale: {rationale}")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# P8 orchestration-stage render helpers (clarify / orchestrator / plan_audit /
+# plan_approval). Same pure/deterministic contract: take the ResearchState (rs),
+# return a SHORT human-readable block. Guard against None (no grid / no audit /
+# empty state) — return a clear "(…)" placeholder, NEVER crash.
+# --------------------------------------------------------------------------- #
+def render_clarify(state: "ResearchState") -> str:
+    """clarify (H0) — converged? + which of the 4 criteria are still missing + the
+    questions asked this round (read from the last ``clarify-*`` steering event)."""
+    from ..decision import clarify as _clarify
+
+    converged = bool(getattr(state, "clarify_converged", False))
+    ok, missing = _clarify.clarify_converged(state)
+    converged = converged or ok
+    lines = [f"converged: {converged}"]
+    if missing:
+        lines.append(f"missing: {', '.join(missing)}")
+    else:
+        lines.append("missing: (none — all 4 criteria pinned)")
+    # Surface the most recent clarify steering event (questions asked / assumed).
+    last_clarify = None
+    for e in getattr(state, "steering_events", []) or []:
+        if isinstance(e, dict) and str(e.get("kind", "")).startswith("clarify"):
+            last_clarify = e
+    if last_clarify is not None:
+        kind = last_clarify.get("kind", "clarify")
+        questions = last_clarify.get("questions")
+        if questions:
+            lines.append(f"questions ({kind}):")
+            for q in questions[:6]:
+                lines.append(f"  • {q}")
+        else:
+            lines.append(f"event: {kind}")
+    return "\n".join(lines)
+
+
+def render_orchestrator(state: "ResearchState") -> str:
+    """orchestrator (P8 ①) — the section-aware task grid: one line per cell
+    ``[status] vendor / spec_group (impact=N): objective`` (capped at ~20)."""
+    grid = getattr(state, "task_grid", None)
+    if grid is None or not getattr(grid, "cells", None):
+        return "(no task grid yet)"
+    cells = list(grid.cells.values())
+    lines = [f"任務格：{len(cells)} cells"]
+    for c in cells[:20]:
+        status = c.status.value if hasattr(c.status, "value") else str(c.status)
+        lines.append(
+            f"  [{status}] {c.vendor} / {c.spec_group} (impact={c.impact}): {c.objective}"
+        )
+    if len(cells) > 20:
+        lines.append(f"  … +{len(cells) - 20} more")
+    return "\n".join(lines)
+
+
+def render_plan_audit(state: "ResearchState") -> str:
+    """plan_audit (P8 ②b) — the plan-audit verdict from ``rs.last_audit``: verdict
+    + both risks + a couple of weak_points / challenges (if present). Short."""
+    audit = getattr(state, "last_audit", None)
+    if audit is None:
+        return "(no plan audit yet)"
+    verdict = audit.verdict.value if hasattr(audit.verdict, "value") else str(audit.verdict)
+    pre = audit.premature_end_risk.value if hasattr(audit.premature_end_risk, "value") \
+        else str(audit.premature_end_risk)
+    drift = audit.research_drift_risk.value if hasattr(audit.research_drift_risk, "value") \
+        else str(audit.research_drift_risk)
+    lines = [
+        f"verdict: {verdict}",
+        f"premature_end_risk: {pre}   research_drift_risk: {drift}",
+    ]
+    weak = list(getattr(audit, "weak_points", []) or [])
+    if weak:
+        lines.append("weak points:")
+        for w in weak[:3]:
+            lines.append(f"  • {w}")
+    challenges = list(getattr(audit, "challenges", []) or [])
+    if challenges:
+        lines.append(f"challenges ({len(challenges)}):")
+        for ch in challenges[:3]:
+            lines.append(f"  • {ch.challenge}")
+    return "\n".join(lines)
+
+
+def render_plan_approval(state: "ResearchState") -> str:
+    """plan_approval (P8 §5 H7) — the cells presented for human approval +
+    whether this is the first cycle (read the last ``plan-approval`` /
+    ``plan-assumed`` steering event), else just list the grid cell ids. Short."""
+    grid = getattr(state, "task_grid", None)
+    cell_ids = list(grid.cells.keys()) if grid and getattr(grid, "cells", None) else []
+    last_evt = None
+    for e in getattr(state, "steering_events", []) or []:
+        if isinstance(e, dict) and str(e.get("kind", "")) in (
+            "plan-approval", "plan-assumed", "plan_approval", "plan_assumed",
+        ):
+            last_evt = e
+    lines = [f"cells presented: {len(cell_ids)}"]
+    if cell_ids:
+        lines.append(f"  {', '.join(cell_ids[:20])}" + (" …" if len(cell_ids) > 20 else ""))
+    if last_evt is not None:
+        first = last_evt.get("first_cycle")
+        if first is not None:
+            lines.append(f"first_cycle: {first}")
+        lines.append(f"event: {last_evt.get('kind')}")
+    return "\n".join(lines)
