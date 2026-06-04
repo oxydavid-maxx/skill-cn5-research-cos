@@ -273,6 +273,15 @@ def node_orchestrator_plan(state: GraphState) -> GraphState:
     rs = state["research_state"]
     _consume_steer_events(rs)
     brains = _brains(state)
+    # P8: the loop head replaces the write_brief->issue_expansion edge as the entry
+    # to a research cycle. The research fan-out still selects from issue_map (an
+    # existing, preserved node contract — spec §"P1-P6 keep their contracts"), so the
+    # loop head must seed the issue_map on the FIRST cycle (empty map). The expander
+    # is idempotent (it no-ops once issue_map is populated); branch/rerank re-expand
+    # via the issue_expansion node reached through _route.
+    expander = getattr(brains, "issue_expander", None)
+    if expander is not None and not rs.issue_map:
+        expander.expand(rs, now=state.get("now", "t"))
     if brains.orchestrator is not None:
         rs.task_grid = brains.orchestrator.plan(rs)
     _report(state, "orchestrator",
@@ -1008,8 +1017,8 @@ def _route(state: GraphState) -> str:
         return "human_push"
     if decision in (Decision.branch, Decision.rerank):
         return "issue_expansion"
-    # pause / continue_research → keep researching
-    return "supervisor"
+    # pause / continue_research → re-plan the grid each cycle (P8 loop head)
+    return "orchestrator_plan"
 
 
 def _route_after_pull(state: GraphState) -> str:
@@ -1022,7 +1031,8 @@ def _route_after_pull(state: GraphState) -> str:
         return "human_review"
     if rs.iteration_count >= max_it:
         return "human_review"
-    return "supervisor"
+    # P8: after a human pull, re-plan the grid (loop head) before researching again.
+    return "orchestrator_plan"
 
 
 # --------------------------------------------------------------------------- #
@@ -1048,6 +1058,11 @@ def build_graph() -> StateGraph:
     g.add_node("human_push", node_human_push)
     g.add_node("deep_audit", node_deep_audit)
     g.add_node("human_review", node_human_review)
+    # P8: reusable orchestration head — (re)plan the task grid, plan-audit (flash),
+    # then the H7 plan-approval gate, before each research cycle.
+    g.add_node("orchestrator_plan", node_orchestrator_plan)
+    g.add_node("plan_audit", node_plan_audit)
+    g.add_node("plan_approval", node_plan_approval)
 
     g.add_edge(START, "intake")
     g.add_edge("intake", "scope")
@@ -1055,7 +1070,13 @@ def build_graph() -> StateGraph:
     g.add_edge("scope", "clarify")
     g.add_conditional_edges("clarify", _route_after_clarify,
                             {"clarify": "clarify", "write_brief": "write_brief"})
-    g.add_edge("write_brief", "issue_expansion")
+    # P8: the brief flows into the orchestration head (loop head), not straight
+    # into issue_expansion. issue_expansion is now reached ONLY via _route returning
+    # "issue_expansion" (branch/rerank).
+    g.add_edge("write_brief", "orchestrator_plan")
+    g.add_edge("orchestrator_plan", "plan_audit")
+    g.add_edge("plan_audit", "plan_approval")
+    g.add_edge("plan_approval", "supervisor")
     g.add_edge("issue_expansion", "supervisor")
     # supervisor -> CONCURRENT researcher fan-out (asyncio.gather over the top-K
     # selected issues, bounded by the MAX_CONCURRENT pool semaphore) -> collect.
@@ -1072,6 +1093,7 @@ def build_graph() -> StateGraph:
         {
             "issue_expansion": "issue_expansion",
             "supervisor": "supervisor",
+            "orchestrator_plan": "orchestrator_plan",
             "human_pull": "human_pull",
             "human_push": "human_push",
             "deep_audit": "deep_audit",
@@ -1085,7 +1107,7 @@ def build_graph() -> StateGraph:
     # After a pull (resumed / auto-defaulted): keep researching, or wrap up at H6.
     g.add_conditional_edges(
         "human_pull", _route_after_pull,
-        {"supervisor": "supervisor", "human_review": "human_review"},
+        {"orchestrator_plan": "orchestrator_plan", "human_review": "human_review"},
     )
     # H3 push-human is NON-blocking: continue an adjacent branch (supervisor).
     g.add_edge("human_push", "supervisor")
