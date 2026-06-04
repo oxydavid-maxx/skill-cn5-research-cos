@@ -18,6 +18,11 @@ class ClarifyGate(Protocol):
 
 
 @runtime_checkable
+class Clarifier(Protocol):
+    def ask(self, state: ResearchState, missing: list[str]) -> list[str]: ...
+
+
+@runtime_checkable
 class BriefWriter(Protocol):
     def write(self, state: ResearchState) -> None: ...
 
@@ -89,3 +94,6 @@ class Brains:
     # P5 synthesis brain — writes the §22 memo prose per section. Defaults to
     # None; build_brains wires the mock stub / RealSynthesizer.
     synthesizer: "Synthesizer | None" = None
+    # P8 H0 clarifier brain — Socratic question-gen for missing criteria.
+    # Defaults to None; build_brains wires MockClarifier / RealClarifier.
+    clarifier: "Clarifier | None" = None

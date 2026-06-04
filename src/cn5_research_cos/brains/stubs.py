@@ -18,6 +18,7 @@ from ..models import (AlbertChallenge, AuditResult, AuditVerdict, ChallengeStatu
                       Claim, Classification, Decision, EvidenceBundle, IssueNode,
                       IssueStatus, IssueType, ReadinessScore, ResearchState, Risk,
                       Source, SourceQuality, SourceType)
+from .clarifier import MockClarifier, RealClarifier
 from .interfaces import Brains
 
 MAX_CONCURRENT = 4
@@ -207,6 +208,8 @@ def build_mock_brains() -> Brains:
         deep_auditor=build_auditor(tier="deep", base=AuditorStub()),
         # P5 synthesis brain — deterministic mock (zero LLM).
         synthesizer=MockSynthesizer(),
+        # P8 H0 clarifier brain — deterministic mock (zero LLM).
+        clarifier=MockClarifier(),
     )
 
 
@@ -322,6 +325,8 @@ def build_brains(llm: str = "mock", *, research_source: str = "web",
             deep_auditor=build_auditor(tier="deep", base=deep_base),
             # P5 synthesis brain — real narrow LLM (one structured haiku call).
             synthesizer=RealSynthesizer(),
+            # P8 H0 clarifier brain — real narrow LLM (one structured haiku call).
+            clarifier=RealClarifier(),
         )
         return _apply_research_source(real, research_source)
     raise NotImplementedError(
