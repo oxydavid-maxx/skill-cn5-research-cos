@@ -73,8 +73,18 @@ So HITL-ask-human fires precisely for genuinely-locked sources after public exha
 
 **Files:** `decision/cell_exhaustion.py` (`classify_cell`), `synthesis/memo.py` ([CHANGE] `route_citations` consumes the cell status instead of re-deciding on transient evidence), `graph.py::_notify_needs_supplement` ([CHANGE] source from `needs_internal` cells).
 
-## 5. Deterministic vs LLM
-LLM: the per-cell reflect (`think`: got/missing/untried) + the existing researcher search synthesis. Everything else deterministic: the exhaustion gate, modality escalation order, the extraction fallback chain, doc download/routing, cell classification, HITL routing.
+## 5. Deterministic vs LLM — "LLM EXTRACTS, CODE DECIDES" (the anti-premature-N/A invariant)
+
+The single most important rule, because the original bug was an LLM lazily declaring N/A: **the LLM may only EXTRACT field-values it can see in real fetched content; it has NO authority to declare a field N/A / needs-supplement. The exhaustion / triangulation / classification gates (f)(g)(h) are deterministic code over the LLM's structured extraction.** So `n-a` becomes a code-PROVABLE state, never an LLM vibe.
+
+| Step | Who | How |
+|---|---|---|
+| (b) read content / (d) reflect | **LLM (researcher brain)** | from the fetched full page/PDF text, emit structured `{field: (value, source_id)}` + `still_missing[]`. The LLM only says "this field's value in this text is X" (verifiable by verbatim citation) — it may NOT output "not found / N/A". |
+| **(f) EXHAUSTION gate** | **code (deterministic)** | `success_criteria` all filled → satisfied; else check the FIXED modality list (query-variants → fetch → docling → pymupdf4llm → pypdf → alt-source) all tried, OR K consecutive rounds added no new field-value. Pure comparison, zero LLM. |
+| **(g) TRIANGULATE** | **code, 1 LLM soft-spot** | `is_primary` = source metadata (vendor domain / datasheet) → code; `same value?` = normalize-then-compare → code (LLM only when normalization is ambiguous); `contradiction` = values differ → code; `resolve` = fixed precedence **primary > recency > quality** → code; unresolved → present both → code. |
+| **(h) CLASSIFY** | **code (deterministic)** | `covered` = criteria filled + corroborated; `partial` = some filled + exhausted; `n-a(public-exhausted)` = missing + all modalities tried + NO gated signal; `needs_internal` = missing + a gated source DETECTED (HTTP 401/403 / redirect-to-login / "register/login/myICP" markers in fetched content) → signal is code, LLM confirms only when ambiguous. |
+
+**Anti-regression invariant:** `n-a` requires code-proof (every modality tried + every extractor run + no gated signal + field still empty). `needs_internal` requires a code-detected auth wall. The LLM cannot short-circuit either. The 2 LLM soft-spots (value-equivalence in (g); gated-vs-absent in (h)) are deterministic-first, LLM-only-on-ambiguous, and BOTH log their decision for audit. Everything else (modality order, fallback chain, doc download/routing, precedence, HITL routing) is deterministic.
 
 ## 6. SOTA grounding (§ref)
 - GPTR — scrapes + reads page CONTENT per sub-query, not snippets ([DeepWiki](https://deepwiki.com/assafelovic/gpt-researcher/1-overview)).
