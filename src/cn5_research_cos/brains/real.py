@@ -18,11 +18,16 @@ output.
 """
 from __future__ import annotations
 
+import asyncio
+import os
+
 from ..artifacts import issue_map
+from ..decision import cell_exhaustion
 from ..llm import sdk_client
 from ..models import (Claim, EvidenceBundle, IssueNode, IssueStatus, IssueType,
                       ReadinessScore, ResearchState, Source, SourceQuality,
                       SourceType)
+from .retrieval import fetch_and_extract, is_doc_url
 
 _ISSUE_TYPES = [t.value for t in IssueType]
 _SOURCE_TYPES = [t.value for t in SourceType]
@@ -157,6 +162,40 @@ _RESEARCH_SYSTEM = (
 )
 
 
+# P9 §A — extraction-only pass over a FETCHED primary document (no tools). The LLM
+# may only EXTRACT field-values + verbatim quotes from the supplied text; it CANNOT
+# declare N/A (the deterministic gate owns that). Mirrors the websearch claim shape.
+_EXTRACT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "claims": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "claim": {"type": "string"},
+                    "quote": {"type": "string"},
+                    "confidence": {"type": "integer", "minimum": 0, "maximum": 5},
+                },
+                "required": ["claim"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["claims"],
+    "additionalProperties": False,
+}
+
+_EXTRACT_SYSTEM = (
+    "You extract grounded field-values from a FETCHED primary document (e.g. a "
+    "vendor datasheet PDF) for ONE sub-issue. One job: pull out the claims the "
+    "document supports, each with a VERBATIM `quote` copied word-for-word from the "
+    "supplied text and a confidence (0-5). Use ONLY the supplied text — do NOT "
+    "browse. You CANNOT declare a field N/A: if a value is not present, simply omit "
+    "it. Return STRICT JSON per schema."
+)
+
+
 class RealResearcher:
     @staticmethod
     def _open_challenges_for_issue(state: ResearchState, issue_id: str) -> str:
@@ -229,10 +268,90 @@ class RealResearcher:
             coverage_gaps=list(raw.get("coverage_gaps", [])),
         )
 
+    @staticmethod
+    def _max_rounds() -> int:
+        """Cap the per-cell exhaustion loop (env override, else the deterministic
+        default). Bounds the fetch+extract escalation so it always terminates."""
+        try:
+            return int(os.environ.get("CN5_COS_MAX_CELL_ROUNDS",
+                                      cell_exhaustion.MAX_CELL_ROUNDS_DEFAULT))
+        except ValueError:
+            return cell_exhaustion.MAX_CELL_ROUNDS_DEFAULT
+
+    @staticmethod
+    def _extract_from_text(text: str, source_id: str) -> list[Claim]:
+        """ONE extraction-only LLM pass (no tools) over fetched document text.
+        Builds Claims grounded in `source_id` with the verbatim quote in notes (so
+        the P4b/P5 citation verify reads it against the source's excerpt)."""
+        user = ("FETCHED DOCUMENT TEXT — extract grounded claims + verbatim quotes "
+                "for this sub-issue:\n\n" + text[:20000])
+        raw = sdk_client.call_structured(_EXTRACT_SYSTEM, user, _EXTRACT_SCHEMA)
+        claims: list[Claim] = []
+        for c in raw.get("claims", []):
+            quote = (c.get("quote") or "").strip()
+            claims.append(Claim(
+                claim=c["claim"], source_refs=[source_id],
+                confidence=int(c.get("confidence", 0)), notes=quote,
+            ))
+        return claims
+
+    def _escalate(self, bundle: EvidenceBundle, state: ResearchState) -> EvidenceBundle:
+        """P9 §A (sync) — exhaust the FETCH modality: for each doc/PDF source not yet
+        fetched, download+extract it and re-extract grounded claims into the SAME
+        bundle. Deterministically bounded: stops when no new doc-source remains, a
+        round adds no new claim, or `_max_rounds` is hit."""
+        fetched: set[str] = set()
+        max_rounds = self._max_rounds()
+        for _ in range(max_rounds):
+            todo = [s for s in bundle.sources if is_doc_url(s.url) and s.id not in fetched]
+            if not todo:
+                break  # fetch modality exhausted
+            new_claim = False
+            for s in todo:
+                fetched.add(s.id)
+                text, _backend = fetch_and_extract(
+                    s.url, base_dir="runs", run_id=state.run_id)
+                if not text:
+                    continue
+                s.excerpt = text[:2000]  # give verbatim verify the source text
+                for c in self._extract_from_text(text, s.id):
+                    bundle.claims.append(c)
+                    new_claim = True
+            if not new_claim:
+                break
+        return bundle
+
+    async def _escalate_async(self, bundle: EvidenceBundle,
+                              state: ResearchState) -> EvidenceBundle:
+        """Async mirror of ``_escalate`` — the blocking fetch+extract and the
+        (asyncio.run-based) extraction pass run via ``to_thread`` so they never
+        block or nest the running event loop."""
+        fetched: set[str] = set()
+        max_rounds = self._max_rounds()
+        for _ in range(max_rounds):
+            todo = [s for s in bundle.sources if is_doc_url(s.url) and s.id not in fetched]
+            if not todo:
+                break
+            new_claim = False
+            for s in todo:
+                fetched.add(s.id)
+                text, _backend = await asyncio.to_thread(
+                    fetch_and_extract, s.url, base_dir="runs", run_id=state.run_id)
+                if not text:
+                    continue
+                s.excerpt = text[:2000]
+                for c in await asyncio.to_thread(self._extract_from_text, text, s.id):
+                    bundle.claims.append(c)
+                    new_claim = True
+            if not new_claim:
+                break
+        return bundle
+
     def research(self, state: ResearchState, issue_id: str) -> EvidenceBundle:
         title, user = self._user_prompt(state, issue_id)
         raw = sdk_client.call_structured_websearch(_RESEARCH_SYSTEM, user, _RESEARCH_SCHEMA)
-        return self._build_bundle(raw, title, issue_id)
+        bundle = self._build_bundle(raw, title, issue_id)
+        return self._escalate(bundle, state)
 
     async def research_async(self, state: ResearchState, issue_id: str, *,
                              pool=None) -> EvidenceBundle:
@@ -240,21 +359,24 @@ class RealResearcher:
         researchers in the graph fan-out overlap (each acquires its own live
         `claude` session, capped at MAX_CONCURRENT). Falls back to the sync
         websearch call when no pool is supplied (back-compat / single-issue use).
+        After round-1 websearch, the exhaustion loop fetches+extracts any doc/PDF
+        source (P9 §A) into the same bundle.
         """
         title, user = self._user_prompt(state, issue_id)
         if pool is None:
             raw = sdk_client.call_structured_websearch(
                 _RESEARCH_SYSTEM, user, _RESEARCH_SCHEMA
             )
-            return self._build_bundle(raw, title, issue_id)
-        # Route through the pool's retry-with-release so a transport/rate-limit
-        # error frees the permit before backing off (Task 3a) and never deadlocks.
-        raw = await pool.run_with_retry(
-            user, system=_RESEARCH_SYSTEM, schema=_RESEARCH_SCHEMA,
-            allowed_tools=["WebSearch"], model=None, max_turns=4,
-            brain="researcher+ws",
-        )
-        return self._build_bundle(raw, title, issue_id)
+        else:
+            # Route through the pool's retry-with-release so a transport/rate-limit
+            # error frees the permit before backing off (Task 3a) and never deadlocks.
+            raw = await pool.run_with_retry(
+                user, system=_RESEARCH_SYSTEM, schema=_RESEARCH_SCHEMA,
+                allowed_tools=["WebSearch"], model=None, max_turns=4,
+                brain="researcher+ws",
+            )
+        bundle = self._build_bundle(raw, title, issue_id)
+        return await self._escalate_async(bundle, state)
 
 
 # --------------------------------------------------------------------------- #
