@@ -142,6 +142,8 @@ class TaskCell(BaseModel):
     output_format: str = ""
     tools: list[str] = Field(default_factory=lambda: ["web"])
     boundaries: str = ""
+    success_criteria: list[str] = Field(default_factory=list)   # target field names that must be filled to count as covered
+    expected_sources: list[str] = Field(default_factory=list)   # e.g. ["vendor datasheet PDF"]
     status: CellStatus = CellStatus.open
     impact: int = 3
     evidence_refs: list[str] = Field(default_factory=list)

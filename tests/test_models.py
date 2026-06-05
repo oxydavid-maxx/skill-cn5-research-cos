@@ -52,3 +52,15 @@ def test_task_grid_cells_and_coverage():
     assert grid.open_high_impact_cells(min_impact=4)[0].id == "NXP|fabric"
     grid.cells["NXP|fabric"].status = CellStatus.covered
     assert grid.open_high_impact_cells(min_impact=4) == []
+
+
+def test_taskcell_has_success_criteria_and_expected_sources():
+    from cn5_research_cos.models import TaskCell, CellStatus
+    c = TaskCell(id="NXP|fabric", vendor="NXP", spec_group="fabric", objective="o",
+                 success_criteria=["packet_buffer", "vlan_table"],
+                 expected_sources=["vendor datasheet PDF"])
+    assert c.success_criteria == ["packet_buffer", "vlan_table"]
+    assert c.expected_sources == ["vendor datasheet PDF"]
+    # defaults
+    d = TaskCell(id="x|y", vendor="x", spec_group="y", objective="o")
+    assert d.success_criteria == [] and d.expected_sources == []
