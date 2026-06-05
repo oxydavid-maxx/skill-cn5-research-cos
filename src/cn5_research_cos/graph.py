@@ -33,11 +33,12 @@ from langgraph.types import interrupt
 from .artifacts import issue_map
 from .brains import build_brains
 from .llm import sdk_client
-from .decision import (anti_premature, branch_budget, convergence, exhaustion,
-                       gate, risk, run_cap)
+from .decision import (anti_premature, branch_budget, cell_exhaustion,
+                       convergence, exhaustion, gate, risk, run_cap)
 from .decision import clarify as _clarify
-from .models import (ChallengeStatus, Decision, EvidenceBundle, HumanTask,
-                     HumanTaskStatus, IssueStatus, IssueType, ResearchState)
+from .models import (CellStatus, ChallengeStatus, Decision, EvidenceBundle,
+                     HumanTask, HumanTaskStatus, IssueStatus, IssueType,
+                     ResearchState)
 from .notify import notify_supplement_needed
 from .observability import reporter as _obs
 from .state import GraphState
@@ -495,6 +496,55 @@ def _persist_ai_sources(rs: ResearchState, bundle: EvidenceBundle, base_dir) -> 
                        exc_info=True)
 
 
+# P9 §C — deterministic cell classification after exhaustion. The LLM only
+# EXTRACTED claims; here code decides covered / partial / na(public-exhausted) /
+# blocked(needs_internal) per cell, NEVER a lazy LLM N/A.
+_GATED_MARKERS = ("login", "log in", "sign in", "sign-in", "register", "myicp",
+                  "request access", "restricted", "nda", "401", "403")
+
+
+def _norm_text(s: str) -> str:
+    """Lowercase, fold underscores to spaces, squeeze whitespace — so a
+    success-criterion field name like ``packet_buffer`` matches ``packet buffer``."""
+    return " ".join(str(s).lower().replace("_", " ").split())
+
+
+def _gated_signal(src) -> bool:
+    """True iff a source looks login/registration/NDA-gated (code-detected), which
+    is the ONLY thing that justifies classifying a cell needs_internal."""
+    blob = _norm_text(f"{src.url or ''} {src.excerpt or ''}")
+    return any(m in blob for m in _GATED_MARKERS)
+
+
+def classify_grid_cells(rs: ResearchState) -> None:
+    """Set each researched cell's status deterministically from its evidence.
+
+    ``filled`` = the success-criteria field names that appear (normalized substring)
+    in any GROUNDED (source-cited) claim for the cell. ``gated_detected`` = any of
+    the cell's sources is code-detected as login/NDA-gated. The classification gate
+    (``cell_exhaustion.classify_cell``) then maps these to covered/partial/na/blocked.
+    Cells with no evidence yet are left untouched (still open)."""
+    grid = rs.task_grid
+    if grid is None:
+        return
+    for cell in grid.cells.values():
+        bundles = [b for b in rs.evidence if b.issue_id == cell.id]
+        if not bundles:
+            continue  # not researched yet — leave status as-is
+        claim_blob_parts: list[str] = []
+        gated = False
+        for b in bundles:
+            for c in b.claims:
+                if c.source_refs:  # only grounded/cited claims count toward coverage
+                    claim_blob_parts.append(f"{c.claim} {c.notes}")
+            for s in b.sources:
+                if _gated_signal(s):
+                    gated = True
+        blob = _norm_text(" ".join(claim_blob_parts))
+        filled = {crit for crit in cell.success_criteria if _norm_text(crit) and _norm_text(crit) in blob}
+        cell.status = cell_exhaustion.classify_cell(cell, filled=filled, gated_detected=gated)
+
+
 def node_collect(state: GraphState) -> GraphState:
     """Fold worker_results into research_state.evidence and advance issue status."""
     rs = state["research_state"]
@@ -531,6 +581,9 @@ def node_collect(state: GraphState) -> GraphState:
     except Exception:  # noqa: BLE001 - reference intake must never crash the loop
         logger.warning("reference-folder scan failed; loop continues", exc_info=True)
     prereqs["source_confidence_checked"] = True
+    # P9 §C: classify each researched cell deterministically from its evidence
+    # (covered/partial/na/blocked) — code decides, never a lazy LLM N/A.
+    classify_grid_cells(rs)
     _report(state, "research", _obs.render_research, rs)
     return {"research_state": rs, "prereqs": prereqs, "worker_results": []}
 
@@ -887,6 +940,34 @@ def is_internal_data_task(t) -> bool:
     return "內部" in blob
 
 
+def _mint_blocked_cell_tasks(rs: ResearchState) -> None:
+    """For each task-grid cell the exhaustion gate marked ``blocked`` (= needs_internal),
+    ensure a deterministic HumanTask exists ("提供內部資料：<vendor> <spec_group>").
+    Idempotent by id so re-running across iterations never mints duplicates."""
+    grid = rs.task_grid
+    if grid is None:
+        return
+    for cell in grid.cells.values():
+        if cell.status != CellStatus.blocked:
+            continue
+        tid = f"HT-CELL-{cell.id}"
+        if tid in rs.human_tasks:
+            continue
+        rs.human_tasks[tid] = HumanTask(
+            id=tid,
+            task_title=f"提供內部資料：{cell.vendor} {cell.spec_group}",
+            owner=None,
+            requested_input="內部資料 / 受限文件",
+            why_needed=(f"{cell.vendor} {cell.spec_group} 的公開資料已窮盡（程式判定），"
+                        "需內部 / 受限文件才能補齊此格規格。"),
+            blocking_question=cell.objective,
+            priority=5,
+            can_continue_without_it=True,
+            fallback_plan="先繼續其他 cell；此格僅列於『需內部資料』，不以推測填補。",
+            status=HumanTaskStatus.open,
+        )
+
+
 def _notify_needs_supplement(state: GraphState, rs: ResearchState, memo) -> None:
     """Email the user AT MOST ONCE PER RUN with a CONSOLIDATED supplement heads-up
     (P8 §5) covering BOTH kinds in a single email:
@@ -901,6 +982,12 @@ def _notify_needs_supplement(state: GraphState, rs: ResearchState, memo) -> None
     Required-Human-Decisions / What-We-Cannot-Say sections. Fail-soft (the notifier
     never raises); the loop always continues."""
     items_text = list(getattr(memo, "needs_supplement", []) or [])
+    # P9 §C: cells the exhaustion gate marked `blocked` (= needs_internal) drive a
+    # supplement ask — public modalities are code-proven exhausted, only internal/
+    # restricted data can fill them. Mint one HumanTask per blocked cell (deduped by
+    # a deterministic id, idempotent across iterations). These carry 內部 in their
+    # fields, so the H3 scan below folds them into the once-per-run email.
+    _mint_blocked_cell_tasks(rs)
     # B-4: unverified-critical claims routed to needs_supplement map back to the
     # HumanTask(s) whose requested_input is one of those texts.
     b4_tasks = [t for t in rs.human_tasks.values() if t.requested_input in items_text]

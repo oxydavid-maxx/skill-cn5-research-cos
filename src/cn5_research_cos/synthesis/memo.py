@@ -20,8 +20,8 @@ from ..brains.synthesis import FINDINGS_KEY, SECTION_KEYS
 from ..citation import policy as cpolicy
 from ..citation import verify as cverify
 from ..decision import risk as crisk
-from ..models import (Blocker, Claim, Decision, HumanTask, HumanTaskStatus, Memo,
-                      MemoSection, ResearchState, Source)
+from ..models import (Blocker, CellStatus, Claim, Decision, HumanTask,
+                      HumanTaskStatus, Memo, MemoSection, ResearchState, Source)
 from .blockers import label_blockers
 
 # Confidence at/above which a claim is "KEY" (decision-critical) — an unverified
@@ -209,6 +209,10 @@ def route_citations(state: ResearchState) -> RouteResult:
     source_texts = {sid: (s.excerpt or "") for sid, s in sources.items()}
     issue_of = _claim_issue_ids(state)
     existing_inputs = {t.requested_input for t in state.human_tasks.values()}
+    # P9 §C: cells the exhaustion gate marked na(public-exhausted)/blocked(needs_internal)
+    # already OWN their supplement (the cell path mints it). Don't re-mint a duplicate
+    # supplement for a claim whose owning cell is in one of those terminal states.
+    grid_cells = state.task_grid.cells if state.task_grid else {}
 
     res = RouteResult()
     for claim in claims:
@@ -219,6 +223,11 @@ def route_citations(state: ResearchState) -> RouteResult:
             res.cited.append(claim)
             continue
         if not _claim_is_critical(state, claim, issue_of.get(id(claim))):
+            res.dropped.append(claim)
+            continue
+        owning_cell = grid_cells.get(issue_of.get(id(claim)))
+        if owning_cell is not None and owning_cell.status in (CellStatus.na, CellStatus.blocked):
+            # the cell-exhaustion path owns this supplement — do not duplicate it.
             res.dropped.append(claim)
             continue
         # unverified AND critical -> a HumanTask (supplement), surfaced not faked.
