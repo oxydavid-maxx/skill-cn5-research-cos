@@ -70,3 +70,16 @@ def test_orchestrator_prompt_is_condensed(monkeypatch):
     assert captured["attempts"] == 2
     # Model stays None -> Sonnet default.
     assert captured["model"] is None
+
+
+def test_orchestrator_emits_success_criteria(monkeypatch):
+    import cn5_research_cos.brains.orchestrator as orch
+    from cn5_research_cos.models import ResearchState
+    def fake(system, user, schema, **kw):
+        return {"cells": [{"vendor":"NXP","spec_group":"fabric","objective":"o",
+                           "success_criteria":["packet_buffer"],"expected_sources":["datasheet PDF"]}]}
+    monkeypatch.setattr(orch, "call_structured", fake)
+    g = orch.RealOrchestrator().plan(ResearchState(run_id="r", original_question="q"))
+    cell = g.cells["NXP|fabric"]
+    assert cell.success_criteria == ["packet_buffer"]
+    assert cell.expected_sources == ["datasheet PDF"]

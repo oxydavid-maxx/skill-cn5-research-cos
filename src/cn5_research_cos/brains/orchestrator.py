@@ -83,6 +83,7 @@ class MockOrchestrator:
             grid.cells["seed|core"] = TaskCell(
                 id="seed|core", vendor="seed", spec_group="core",
                 objective=rs.success_form or rs.original_question,
+                success_criteria=["spec"], expected_sources=["vendor datasheet"],
                 status=CellStatus.open, impact=5)
         for i, gap in enumerate(_gaps(rs)):
             cid = f"gap|{i}"
@@ -96,14 +97,18 @@ _SCHEMA = {"type": "object", "properties": {"cells": {"type": "array", "items": 
     "type": "object", "properties": {
         "vendor": {"type": "string"}, "spec_group": {"type": "string"},
         "objective": {"type": "string"}, "output_format": {"type": "string"},
-        "boundaries": {"type": "string"}, "impact": {"type": "integer"}},
+        "boundaries": {"type": "string"}, "impact": {"type": "integer"},
+        "success_criteria": {"type": "array", "items": {"type": "string"}},
+        "expected_sources": {"type": "array", "items": {"type": "string"}}},
     "required": ["vendor", "spec_group", "objective"], "additionalProperties": False}}},
     "required": ["cells"], "additionalProperties": False}
 _SYSTEM = ("You are the research ORCHESTRATOR. Decompose the question into a "
            "section-aware task grid: each cell = one (vendor x spec_group) research "
            "subtask that maps to ONE row/section of the final report. Update — do NOT "
            "duplicate covered cells; ADD cells for the gaps/challenges. Each cell needs "
-           "objective + output_format + boundaries + impact(0-5). Strict JSON.")
+           "objective + output_format + boundaries + impact(0-5). For each cell also "
+           "give success_criteria (the target field names that must be filled) and "
+           "expected_sources (e.g. 'vendor datasheet PDF'). Strict JSON.")
 
 
 class RealOrchestrator:
@@ -125,5 +130,7 @@ class RealOrchestrator:
                     id=cid, vendor=c["vendor"], spec_group=c["spec_group"],
                     objective=c["objective"], output_format=c.get("output_format", ""),
                     boundaries=c.get("boundaries", ""), impact=int(c.get("impact", 3)),
+                    success_criteria=c.get("success_criteria", []),
+                    expected_sources=c.get("expected_sources", []),
                     status=CellStatus.open)
         return grid
