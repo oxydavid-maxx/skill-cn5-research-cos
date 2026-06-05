@@ -90,5 +90,65 @@ LLM: the per-cell reflect (`think`: got/missing/untried) + the existing research
 - **Regression:** P1–P8 green; the outer orchestration loop unchanged.
 - **Live (opt-in):** re-run switch-PK → NXP SJA1105 row comes back with 128kB buffer / 4096 VLAN / 8 queues / 10 CBS / AEC-Q100 Grade2 filled+cited (not N/A); only genuinely myICP-locked fields → supplement email.
 
+## 1b. Full SOTA taxonomy gap-map (survey arXiv:2506.18096 "Deep Research Agents: A Systematic Examination and Roadmap")
+
+The authoritative 5-component taxonomy, our cockpit mapped against it honestly (this is the architecture-vs-SOTA diff the MRC said was never done). ✅ have · ◐ partial · ❌ gap.
+
+| SOTA component | technique | us | disposition |
+|---|---|---|---|
+| **Retrieval** | API search | ✅ WebSearch | have |
+| | read FULL page (not snippet) | ❌→✅ | **P9 §A②** |
+| | multi-backend doc extract | ❌→✅ | **P9 §B** |
+| | iterative query refinement | ◐ | **P9 §A④** |
+| | retrieval grading / corrective (CRAG/Self-RAG) | ◐ source_critic/curator | **P9 §E (make explicit grade-gate)** |
+| | **browser-based + AUTHENTICATED retrieval** (log into gated portals) | ❌ | **P10** — THE myICP/NDA wall; SOTA drives headless browser + login |
+| | multi-hop chaining | ◐ re-plan | P10 (deepen) |
+| **Planning** | intent-clarify before plan | ✅ H0 Socratic | have (P8) |
+| | unified plan + user confirm (Gemini editable-CoT) | ✅ H7 | have (P8) |
+| | dynamic replanning | ✅ reusable loop | have (P8) |
+| | multi-agent composition | ✅ orchestrator+fanout+Albert | have |
+| | **explicit success-criteria + expected-sources per aspect** (OpenAI ResearchPlan) | ❌→✅ | **P9 §F** |
+| | backtrack/pivot prune dead branch | ◐ re-rank | P10 |
+| **Tools** | **code execution** (normalize/compute/plot specs) | ❌ | P10 |
+| | data analytics / table extraction | ◐ docling tables | P10 |
+| | **multimodal OCR** (datasheet spec tables-as-images) | ❌ | P10 |
+| | MCP | ◐ isolated | n/a |
+| **Memory** | short-term context | ✅ | have |
+| | compress intermediate | ✅ compressor | have |
+| | external store | ◐ per-topic file store (P7) | have |
+| | **long-term / cross-run memory + CBR (reuse past research trajectories)** | ❌ | P10 — named core component, under-built |
+| **Synthesis** | outline-driven (section-aware) | ✅ task grid→rows | have (P8) |
+| | citation tracking (verbatim) | ✅ | have (P4b) |
+| | **cross-source triangulation + contradiction detection** | ❌→✅ | **P9 §D** (survey open-challenge #2) |
+| | **multi-pass self-critique of the REPORT** (Gemini) | ❌ | P10 (Albert audits research, not the final write) |
+| | multi-perspective question-gen (STORM personas) | ◐ Albert single-lens | P10 |
+| **Optimization** | SFT / RL (GRPO) training | ❌ | **out** — subscription SDK, no weight access |
+| | CBR non-parametric continual learning | ❌ | P10 (feasible w/o training; = the memory gap) |
+
+**Honest verdict on "還缺什麼 SOTA":** P8+P9 cover planning, depth-retrieval, extraction, exhaustion, section-aware synthesis, citation. **Still genuinely missing — folded in or backlogged:** (a) cross-source **triangulation/contradiction** → **added to P9 (§D)**; (b) per-cell **success criteria** → **added to P9 (§F)**; (c) explicit **retrieval grade-gate** → **P9 (§E)**; (d) **authenticated/browser retrieval** (the real NDA-wall opener), (e) **long-term/CBR memory**, (f) **code-exec + multimodal OCR**, (g) **report-level multi-pass self-critique**, (h) **multi-perspective question-gen** → **P10 backlog** (§12). RL/SFT training = out (no model-weight access on subscription).
+
+## D. Component D — cross-source triangulation + contradiction detection [ADD, P9]
+Today citation-verify checks a claim against ITS source (verbatim ≥0.85). It does NOT check whether sources AGREE. For a spec-PK, sources routinely disagree (a distributor lists 5 ports, the datasheet 4). Add:
+- A claim of a quantitative/spec field is `corroborated` only if **≥2 independent sources agree** (or 1 PRIMARY source = the vendor datasheet). Single secondary-only → `weakly-sourced` (flagged, not silently asserted).
+- **Contradiction detection:** when two sources give different values for the same (product, field), record a `contradiction` (the EvidenceBundle field already exists — populate + surface it), and resolve by precedence: **primary (vendor datasheet) > recency > source quality**; if unresolved, present BOTH values flagged, never silently pick.
+**Files:** `decision/triangulation.py` (corroboration + contradiction + precedence resolution), `synthesis/memo.py` ([CHANGE] consume triangulation status), `models.py` (EvidenceBundle.contradictions populated).
+
+## E. Component E — explicit retrieval grade-gate (CRAG-style) [CHANGE, P9]
+Make the per-cell loop's source acceptance explicit: grade each fetched source for relevance+credibility (reuse P4b source_critic/curator) → `correct` (use) / `ambiguous` (refine + fetch more) / `incorrect` (discard → escalate modality, §A④). This is the CRAG correct/ambiguous/incorrect gate wired into §A③/④.
+
+## F. Component F — success criteria per cell [ADD, P9]
+Each TaskCell carries explicit `success_criteria` (which target fields must be filled to count as `covered`) + `expected_sources` (e.g. "vendor datasheet PDF") — so the §A exhaustion gate is well-defined (OpenAI ResearchPlan pattern), not a vague "enough?".
+**Files:** `models.py` (TaskCell.success_criteria, expected_sources), `brains/orchestrator.py` ([CHANGE] emit them), `decision/cell_exhaustion.py` ([CHANGE] gate on them).
+
+## 12. P10 backlog (SOTA gaps beyond P9 — honest, owner-bound)
+Not in P9; recorded so they are not silently dropped (MRC Deferred-Scope-Permanence prevention). Owner: ecosystem/cn5-research-cos maintainer.
+1. **Authenticated/browser retrieval** — headless-browser + portal login (myICP/registration) to open the *real* NDA-ish wall; the single highest-value gap for "竭盡所能". (survey challenge #1)
+2. **Long-term / cross-run memory + CBR** — reuse prior research trajectories + accumulate a topic knowledge base across runs. (survey component D)
+3. **Report-level multi-pass self-critique** — Gemini-style iterative polish of the synthesis (beyond Albert's research audit).
+4. **Code-execution + data-analytics tool** — normalize/compute/compare quantitative specs, derive fabric bandwidth, generate comparison plots.
+5. **Multimodal OCR** — extract spec tables that are images in datasheets.
+6. **Multi-perspective question-gen** — STORM-style diverse personas to widen question coverage.
+7. **Backtrack/pivot pruning** — explicitly abandon dead branches.
+
 ## 8. Pipeline / sequencing
 spec → writing-plans → subagent-driven-development (TDD, P1–P8 green) → live switch-PK re-run proving the SJA1105 specs fill. The §9 global gate (R23 SOTA-Alignment) and the P8 fixes are prerequisites already on main.
