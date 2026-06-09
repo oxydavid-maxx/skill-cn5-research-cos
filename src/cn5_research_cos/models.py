@@ -220,6 +220,16 @@ class Claim(BaseModel):
     notes: str = ""
 
 
+class FieldObservation(BaseModel):
+    """P10a — a structured (field -> value) extraction the deterministic gates consume.
+    The LLM emits these; code grades/triangulates/classifies over them."""
+    field: str                       # MUST be one of the owning cell's success_criteria
+    value: str                       # the extracted value, e.g. "128 kB", "4096"
+    source_ref: str = ""             # Source.id this value came from
+    quote: str = ""                  # verbatim span supporting the value
+    confidence: int = Field(default=0, ge=0, le=5)
+
+
 class CitationStatus(str, Enum):
     verified = "verified"
     unverified = "unverified"
@@ -249,6 +259,12 @@ class EvidenceBundle(BaseModel):
     missing_evidence: list[str] = Field(default_factory=list)
     suggested_followups: list[str] = Field(default_factory=list)
     coverage_gaps: list[str] = Field(default_factory=list)
+    # P10a: structured (field -> value) observations for the deterministic gates
+    # (grade/triangulate/classify). Default empty so all P1-P9 bundles round-trip.
+    observations: list[FieldObservation] = Field(default_factory=list)
+    # P10a: the exhaustion loop stamps whether the cell's public modalities were
+    # genuinely exhausted (so classification can prove `na`, never guess it).
+    public_exhausted: bool = False
 
 
 class ReadinessScore(BaseModel):

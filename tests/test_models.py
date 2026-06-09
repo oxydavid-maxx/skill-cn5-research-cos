@@ -64,3 +64,14 @@ def test_taskcell_has_success_criteria_and_expected_sources():
     # defaults
     d = TaskCell(id="x|y", vendor="x", spec_group="y", objective="o")
     assert d.success_criteria == [] and d.expected_sources == []
+
+
+def test_field_observation_and_bundle_obs_fields():
+    from cn5_research_cos.models import FieldObservation, EvidenceBundle
+    o = FieldObservation(field="packet_buffer", value="128 kB", source_ref="S1",
+                         quote="packet buffer is 128 kB", confidence=5)
+    assert o.field == "packet_buffer" and o.value == "128 kB" and o.source_ref == "S1"
+    b = EvidenceBundle(query="q")
+    assert b.observations == [] and b.public_exhausted is False
+    b2 = EvidenceBundle(query="q", observations=[o], public_exhausted=True)
+    assert EvidenceBundle.model_validate_json(b2.model_dump_json()) == b2
