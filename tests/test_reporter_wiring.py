@@ -27,7 +27,9 @@ def test_mock_loop_streams_debate_when_reporter_threaded(tmp_path):
     assert "[scope]" in out
     assert "[expand]" in out
     assert "[albert_audit]" in out
-    assert "[readiness]" in out
+    # P10b §D: the thin convergence/readiness live cards were retired; the per-round
+    # research-status dashboard replaces them as the headline coverage view.
+    assert "[research_status]" in out
     assert "[decision]" in out
     # albert_audit appears BEFORE the decision (the debate precedes the COS action).
     assert out.index("[albert_audit]") < out.index("[decision]")
