@@ -583,6 +583,7 @@ def node_collect(state: GraphState) -> GraphState:
     # P9 §C: classify each researched cell deterministically from its evidence
     # (covered/partial/na/blocked) — code decides, never a lazy LLM N/A.
     classify_grid_cells(rs)
+    _report(state, "research_status", _obs.render_research_status, rs)
     _report(state, "research", _obs.render_research, rs)
     return {"research_state": rs, "prereqs": prereqs, "worker_results": []}
 
@@ -639,7 +640,6 @@ def node_albert_audit(state: GraphState) -> GraphState:
         prereqs["pending_questions_extracted"] = True
     # P5b: stream Albert's FULL output (the debate core) + the convergence tally.
     _report(state, "albert_audit", _obs.render_albert, audit)
-    _report(state, "convergence", _obs.render_convergence, rs)
     return {"research_state": rs, "prereqs": prereqs}
 
 
@@ -703,7 +703,6 @@ def node_readiness_scoring(state: GraphState) -> GraphState:
          + score.research_exhaustion_readiness + score.human_bottleneck_clarity)
     rs.readiness_history.append({"sum": s, "iteration": rs.iteration_count})
     rs.iteration_count += 1
-    _report(state, "readiness", _obs.render_readiness, score)
     return {"research_state": rs}
 
 
