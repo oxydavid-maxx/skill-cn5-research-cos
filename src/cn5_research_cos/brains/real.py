@@ -24,9 +24,9 @@ import os
 from ..artifacts import issue_map
 from ..decision import cell_exhaustion
 from ..llm import sdk_client
-from ..models import (Claim, EvidenceBundle, IssueNode, IssueStatus, IssueType,
-                      ReadinessScore, ResearchState, Source, SourceQuality,
-                      SourceType)
+from ..models import (Claim, EvidenceBundle, FieldObservation, IssueNode,
+                      IssueStatus, IssueType, ReadinessScore, ResearchState,
+                      Source, SourceQuality, SourceType)
 from .retrieval import fetch_and_extract, is_doc_url
 
 _ISSUE_TYPES = [t.value for t in IssueType]
@@ -140,6 +140,21 @@ _RESEARCH_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "observations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "field": {"type": "string"},
+                    "value": {"type": "string"},
+                    "quote": {"type": "string"},
+                    "confidence": {"type": "integer", "minimum": 0, "maximum": 5},
+                    "source_indices": {"type": "array", "items": {"type": "integer"}},
+                },
+                "required": ["field", "value"],
+                "additionalProperties": False,
+            },
+        },
         "missing_evidence": {"type": "array", "items": {"type": "string"}},
         "coverage_gaps": {"type": "array", "items": {"type": "string"}},
     },
@@ -158,6 +173,10 @@ _RESEARCH_SYSTEM = (
     "for-word, same casing/punctuation) from one of that claim's cited sources' "
     "`excerpt` — it MUST be a literal substring of that source's text, NOT a "
     "paraphrase of your `claim`. This lets the claim be verified against its source. "
+    "ALSO emit `observations` — one per TARGET FIELD given in the prompt: each "
+    "`field` MUST be one of those target fields, `value` is the concrete extracted "
+    "value (e.g. '128 kB', '4096'), `quote` is a verbatim span supporting it, with "
+    "`source_indices`. Omit any target field you cannot find — NEVER write N/A. "
     "Return STRICT JSON per schema."
 )
 
@@ -181,6 +200,20 @@ _EXTRACT_SCHEMA = {
                 "additionalProperties": False,
             },
         },
+        "observations": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "field": {"type": "string"},
+                    "value": {"type": "string"},
+                    "quote": {"type": "string"},
+                    "confidence": {"type": "integer", "minimum": 0, "maximum": 5},
+                },
+                "required": ["field", "value"],
+                "additionalProperties": False,
+            },
+        },
     },
     "required": ["claims"],
     "additionalProperties": False,
@@ -192,7 +225,9 @@ _EXTRACT_SYSTEM = (
     "document supports, each with a VERBATIM `quote` copied word-for-word from the "
     "supplied text and a confidence (0-5). Use ONLY the supplied text — do NOT "
     "browse. You CANNOT declare a field N/A: if a value is not present, simply omit "
-    "it. Return STRICT JSON per schema."
+    "it. ALSO emit `observations` {field, value, quote, confidence} for the TARGET "
+    "FIELDS listed in the prompt: each `field` MUST be one of those target fields; "
+    "omit any field you cannot find — never write N/A. Return STRICT JSON per schema."
 )
 
 
@@ -216,21 +251,35 @@ class RealResearcher:
         )
 
     @staticmethod
+    def _cell_criteria(state: ResearchState, issue_id: str) -> list[str]:
+        """The owning cell's success_criteria (target fields), or [] if no grid/cell."""
+        grid = getattr(state, "task_grid", None)
+        if grid is None:
+            return []
+        cell = grid.cells.get(issue_id)
+        return list(cell.success_criteria) if cell else []
+
+    @staticmethod
     def _user_prompt(state: ResearchState, issue_id: str) -> tuple[str, str]:
         node = state.issue_map.get(issue_id)
         title = node.title if node else issue_id
         desc = node.description if node else ""
         challenges = RealResearcher._open_challenges_for_issue(state, issue_id)
+        criteria = RealResearcher._cell_criteria(state, issue_id)
+        fields = ("\nTARGET FIELDS to fill (emit observations for these): "
+                  + ", ".join(criteria) + "\n") if criteria else ""
         user = (
             f"SUB-ISSUE:\n{title}\n{desc}\n\n"
             f"CONTEXT (original question): {state.original_question}\n"
             f"{challenges}\n"
+            f"{fields}"
             "Run ONE WebSearch for this sub-issue and return sources + grounded claims."
         )
         return title, user
 
     @staticmethod
-    def _build_bundle(raw: dict, title: str, issue_id: str) -> EvidenceBundle:
+    def _build_bundle(raw: dict, title: str, issue_id: str,
+                      criteria: list[str] | None = None) -> EvidenceBundle:
         sources: list[Source] = []
         for i, s in enumerate(raw.get("sources", [])):
             try:
@@ -262,10 +311,23 @@ class RealResearcher:
                 confidence=int(c.get("confidence", 0)), notes=verbatim_quote,
             ))
 
+        crit = set(criteria or [])
+        observations: list[FieldObservation] = []
+        for o in raw.get("observations", []):
+            if o.get("field") not in crit:
+                continue
+            idxs = o.get("source_indices", [])
+            sref = sources[idxs[0]].id if (idxs and isinstance(idxs[0], int)
+                                           and 0 <= idxs[0] < len(sources)) else ""
+            observations.append(FieldObservation(
+                field=o["field"], value=o.get("value", ""), source_ref=sref,
+                quote=o.get("quote", ""), confidence=int(o.get("confidence", 0))))
+
         return EvidenceBundle(
             query=title, issue_id=issue_id, claims=claims, sources=sources,
             missing_evidence=list(raw.get("missing_evidence", [])),
             coverage_gaps=list(raw.get("coverage_gaps", [])),
+            observations=observations,
         )
 
     @staticmethod
@@ -279,12 +341,17 @@ class RealResearcher:
             return cell_exhaustion.MAX_CELL_ROUNDS_DEFAULT
 
     @staticmethod
-    def _extract_from_text(text: str, source_id: str) -> list[Claim]:
+    def _extract_from_text(text: str, source_id: str,
+                           criteria: list[str] | None = None
+                           ) -> tuple[list[Claim], list[FieldObservation]]:
         """ONE extraction-only LLM pass (no tools) over fetched document text.
         Builds Claims grounded in `source_id` with the verbatim quote in notes (so
-        the P4b/P5 citation verify reads it against the source's excerpt)."""
+        the P4b/P5 citation verify reads it against the source's excerpt), PLUS
+        structured FieldObservations for the cell's TARGET FIELDS (criteria)."""
+        crit = set(criteria or [])
+        flds = (" TARGET FIELDS: " + ", ".join(crit)) if crit else ""
         user = ("FETCHED DOCUMENT TEXT — extract grounded claims + verbatim quotes "
-                "for this sub-issue:\n\n" + text[:20000])
+                "+ field observations for this sub-issue." + flds + "\n\n" + text[:20000])
         raw = sdk_client.call_structured(_EXTRACT_SYSTEM, user, _EXTRACT_SCHEMA)
         claims: list[Claim] = []
         for c in raw.get("claims", []):
@@ -293,7 +360,14 @@ class RealResearcher:
                 claim=c["claim"], source_refs=[source_id],
                 confidence=int(c.get("confidence", 0)), notes=quote,
             ))
-        return claims
+        observations: list[FieldObservation] = []
+        for o in raw.get("observations", []):
+            if crit and o.get("field") not in crit:
+                continue
+            observations.append(FieldObservation(
+                field=o["field"], value=o.get("value", ""), source_ref=source_id,
+                quote=o.get("quote", ""), confidence=int(o.get("confidence", 0))))
+        return claims, observations
 
     def _escalate(self, bundle: EvidenceBundle, state: ResearchState) -> EvidenceBundle:
         """P9 §A (sync) — exhaust the FETCH modality: for each doc/PDF source not yet
@@ -350,7 +424,8 @@ class RealResearcher:
     def research(self, state: ResearchState, issue_id: str) -> EvidenceBundle:
         title, user = self._user_prompt(state, issue_id)
         raw = sdk_client.call_structured_websearch(_RESEARCH_SYSTEM, user, _RESEARCH_SCHEMA)
-        bundle = self._build_bundle(raw, title, issue_id)
+        criteria = self._cell_criteria(state, issue_id)
+        bundle = self._build_bundle(raw, title, issue_id, criteria)
         return self._escalate(bundle, state)
 
     async def research_async(self, state: ResearchState, issue_id: str, *,
@@ -375,7 +450,8 @@ class RealResearcher:
                 allowed_tools=["WebSearch"], model=None, max_turns=4,
                 brain="researcher+ws",
             )
-        bundle = self._build_bundle(raw, title, issue_id)
+        criteria = self._cell_criteria(state, issue_id)
+        bundle = self._build_bundle(raw, title, issue_id, criteria)
         return await self._escalate_async(bundle, state)
 
 
