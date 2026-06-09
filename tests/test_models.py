@@ -75,3 +75,12 @@ def test_field_observation_and_bundle_obs_fields():
     assert b.observations == [] and b.public_exhausted is False
     b2 = EvidenceBundle(query="q", observations=[o], public_exhausted=True)
     assert EvidenceBundle.model_validate_json(b2.model_dump_json()) == b2
+
+
+def test_delta_tracking_fields():
+    from cn5_research_cos.models import TaskCell, ResearchState, CellStatus
+    c = TaskCell(id="x|y", vendor="x", spec_group="y", objective="o")
+    assert c.last_status is None and c.last_filled == 0 and c.stalled_cycles == 0
+    rs = ResearchState(run_id="r", original_question="q")
+    assert rs.prev_coverage == 0 and rs.obs_prev == {}
+    assert "obs_prev" not in rs.model_dump()

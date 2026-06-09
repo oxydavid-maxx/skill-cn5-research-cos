@@ -148,6 +148,11 @@ class TaskCell(BaseModel):
     impact: int = 3
     evidence_refs: list[str] = Field(default_factory=list)
     notes: str = ""
+    # Observability delta (P10b): the status + filled-field count at the previous
+    # classify pass, and how many consecutive passes the cell has not changed.
+    last_status: CellStatus | None = None
+    last_filled: int = 0
+    stalled_cycles: int = 0
 
 
 class TaskGrid(BaseModel):
@@ -399,3 +404,8 @@ class ResearchState(BaseModel):
     # (e.g. "hard cost cap hit: $10.31 >= $10.00"). None on a normal stop. The loop
     # records this then emits the current findings (degraded-but-honest).
     stop_reason: str | None = None
+    # Observability delta (P10b): scalar coverage at the previous dashboard render.
+    prev_coverage: int = 0
+    # Transient per-stage "previous" cache so each render_* can show its delta.
+    # Excluded from the persisted snapshot — rebuilt within a run, NOT domain state.
+    obs_prev: dict = Field(default_factory=dict, exclude=True)
