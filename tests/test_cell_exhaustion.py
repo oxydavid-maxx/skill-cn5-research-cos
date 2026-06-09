@@ -16,14 +16,20 @@ def test_exhausted_when_all_modalities_tried():
                                all_modalities={"search", "fetch", "extract"}, rounds_no_new=0) is True
 
 
-def test_classify_covered():
-    assert ce.classify_cell(_cell(), filled={"packet_buffer", "vlan_table"}, gated_detected=False) == CellStatus.covered
+def test_classify_na_only_when_exhausted():
+    assert ce.classify_cell(_cell(), filled=set(), gated_detected=False,
+                            public_exhausted=True) == CellStatus.na
+    assert ce.classify_cell(_cell(), filled=set(), gated_detected=False,
+                            public_exhausted=False) == CellStatus.open
 
 
-def test_classify_needs_internal_when_gated():
-    assert ce.classify_cell(_cell(), filled={"packet_buffer"}, gated_detected=True) == CellStatus.blocked  # = needs_internal
+def test_classify_partial_ignores_exhausted():
+    assert ce.classify_cell(_cell(), filled={"packet_buffer"}, gated_detected=False,
+                            public_exhausted=True) == CellStatus.partial
 
 
-def test_classify_na_public_exhausted():
-    assert ce.classify_cell(_cell(), filled={"packet_buffer"}, gated_detected=False) == CellStatus.partial
-    assert ce.classify_cell(_cell(), filled=set(), gated_detected=False) == CellStatus.na
+def test_classify_covered_and_blocked_with_new_param():
+    assert ce.classify_cell(_cell(), filled={"packet_buffer", "vlan_table"},
+                            gated_detected=False, public_exhausted=True) == CellStatus.covered
+    assert ce.classify_cell(_cell(), filled={"packet_buffer"},
+                            gated_detected=True, public_exhausted=True) == CellStatus.blocked

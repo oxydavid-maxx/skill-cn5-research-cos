@@ -22,7 +22,8 @@ def public_exhausted(cell: TaskCell, *, filled: set[str], modalities_tried: set[
     return rounds_no_new >= K_ROUNDS_NO_NEW
 
 
-def classify_cell(cell: TaskCell, *, filled: set[str], gated_detected: bool) -> CellStatus:
+def classify_cell(cell: TaskCell, *, filled: set[str], gated_detected: bool,
+                  public_exhausted: bool) -> CellStatus:
     crit = set(cell.success_criteria)
     if crit and crit.issubset(filled):
         return CellStatus.covered
@@ -30,4 +31,6 @@ def classify_cell(cell: TaskCell, *, filled: set[str], gated_detected: bool) -> 
         return CellStatus.blocked        # = needs_internal (a gated source was code-detected)
     if filled:
         return CellStatus.partial
-    return CellStatus.na                  # public-exhausted, genuinely nothing
+    if public_exhausted:
+        return CellStatus.na             # public-exhausted, genuinely nothing (code-proven)
+    return CellStatus.open               # NOT exhausted -> keep researching next round
