@@ -392,3 +392,92 @@ def render_plan_approval(state: "ResearchState") -> str:
             lines.append(f"first_cycle: {first}")
         lines.append(f"event: {last_evt.get('kind')}")
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# P10b — per-round research-status dashboard (pure/deterministic, no LLM).
+# Coverage bars + round delta (left) and an action panel (right), as two
+# side-by-side columns via rich.Columns rendered to a string (so it still
+# appends to debate.md as text). One line when nothing moved this cycle.
+# --------------------------------------------------------------------------- #
+_STALL_THRESHOLD = 2
+_BAR_WIDTH = 10
+
+
+def _bar(filled: int, total: int) -> str:
+    total = max(1, total)
+    n = round(_BAR_WIDTH * filled / total)
+    return "█" * n + "░" * (_BAR_WIDTH - n)
+
+
+def _coverage(grid) -> tuple[int, int]:
+    """(filled fields, total criteria) across all cells with criteria."""
+    f = sum(c.last_filled for c in grid.cells.values())
+    t = sum(len(c.success_criteria) for c in grid.cells.values())
+    return f, t
+
+
+def render_research_status(state: "ResearchState") -> str:
+    """P10b — per-round research-status dashboard: coverage + round delta (left) and
+    the action panel (right), as two columns. One line when nothing moved this cycle.
+    Pure/deterministic: reads TaskGrid cell statuses + the delta bookkeeping."""
+    grid = getattr(state, "task_grid", None)
+    if grid is None or not grid.cells:
+        return ""
+    filled, total = _coverage(grid)
+    prev = getattr(state, "prev_coverage", 0)
+    moved = list((state.obs_prev or {}).get("grid_moved", []))
+    state.prev_coverage = filled
+
+    pct = round(100 * filled / max(1, total))
+    prev_pct = round(100 * prev / max(1, total))
+    if not moved and filled == prev:
+        blocked = [c for c in grid.cells.values() if c.status.value == "blocked"]
+        stalled = [c for c in grid.cells.values() if c.stalled_cycles >= _STALL_THRESHOLD]
+        flags = []
+        if blocked:
+            flags.append("/".join(sorted({c.vendor for c in blocked})) + " 卡住")
+        if stalled:
+            flags.append("/".join(sorted({c.vendor for c in stalled})) + " 停滯")
+        tail = ("（" + " · ".join(flags) + "）") if flags else ""
+        return f"研究現況：無新進展{tail}"
+
+    from collections import defaultdict
+    by_vendor: dict = defaultdict(lambda: [0, 0, [], 0])
+    for c in grid.cells.values():
+        agg = by_vendor[c.vendor]
+        agg[0] += c.last_filled
+        agg[1] += len(c.success_criteria)
+        agg[2].append(c.status.value)
+        agg[3] = max(agg[3], c.stalled_cycles)
+    moved_vendors = {grid.cells[cid].vendor for cid in moved if cid in grid.cells}
+    head = f"研究現況  {prev_pct}%→{pct}%  ▲+{pct - prev_pct}%"
+    left = [head]
+    for vendor in sorted(by_vendor):
+        f, t, statuses, st = by_vendor[vendor]
+        mark = "▲" if vendor in moved_vendors else ("—停滯" if st >= _STALL_THRESHOLD else "")
+        blk = sum(1 for s in statuses if s == "blocked")
+        tag = f" ⛔{blk}" if blk else ""
+        left.append(f"{vendor:<10} {_bar(f, t)} {f}/{t}{tag} {mark}")
+
+    right = ["待處理:"]
+    blocked_vendors = sorted({c.vendor for c in grid.cells.values() if c.status.value == "blocked"})
+    if blocked_vendors:
+        right.append("需要你出手: " + ", ".join(blocked_vendors) + " 需內部")
+    empty = sorted({v for v, agg in by_vendor.items() if agg[0] == 0})
+    if empty:
+        right.append("最大缺口: " + ", ".join(empty) + " 全空白")
+    stalled_v = sorted({c.vendor for c in grid.cells.values() if c.stalled_cycles >= _STALL_THRESHOLD})
+    if stalled_v:
+        right.append("停滯: " + ", ".join(stalled_v))
+
+    try:
+        from rich.columns import Columns
+        from rich.panel import Panel
+        from rich.console import Console
+        import io
+        console = Console(file=io.StringIO(), width=88)
+        console.print(Columns([Panel("\n".join(left)), Panel("\n".join(right))]))
+        return console.file.getvalue().rstrip("\n")
+    except Exception:  # noqa: BLE001
+        return "\n".join(left) + "\n--\n" + "\n".join(right)
