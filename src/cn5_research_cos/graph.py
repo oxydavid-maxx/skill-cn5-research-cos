@@ -34,7 +34,7 @@ from .artifacts import issue_map
 from .brains import build_brains
 from .llm import sdk_client
 from .decision import (anti_premature, branch_budget, cell_exhaustion,
-                       convergence, exhaustion, gate, risk, run_cap)
+                       cell_synthesis, convergence, exhaustion, gate, risk, run_cap)
 from .decision import clarify as _clarify
 from .models import (CellStatus, ChallengeStatus, Decision, EvidenceBundle,
                      HumanTask, HumanTaskStatus, IssueStatus, IssueType,
@@ -517,32 +517,22 @@ def _gated_signal(src) -> bool:
 
 
 def classify_grid_cells(rs: ResearchState) -> None:
-    """Set each researched cell's status deterministically from its evidence.
-
-    ``filled`` = the success-criteria field names that appear (normalized substring)
-    in any GROUNDED (source-cited) claim for the cell. ``gated_detected`` = any of
-    the cell's sources is code-detected as login/NDA-gated. The classification gate
-    (``cell_exhaustion.classify_cell``) then maps these to covered/partial/na/blocked.
-    Cells with no evidence yet are left untouched (still open)."""
+    """P10a — deterministic per-cell status from the structured observations.
+    synthesize_cell (grade + triangulate) computes `filled`; the loop's
+    bundle.public_exhausted proves whether `na` is allowed. Cells with no evidence
+    are left untouched (still open)."""
     grid = rs.task_grid
     if grid is None:
         return
     for cell in grid.cells.values():
         bundles = [b for b in rs.evidence if b.issue_id == cell.id]
         if not bundles:
-            continue  # not researched yet — leave status as-is
-        claim_blob_parts: list[str] = []
-        gated = False
-        for b in bundles:
-            for c in b.claims:
-                if c.source_refs:  # only grounded/cited claims count toward coverage
-                    claim_blob_parts.append(f"{c.claim} {c.notes}")
-            for s in b.sources:
-                if _gated_signal(s):
-                    gated = True
-        blob = _norm_text(" ".join(claim_blob_parts))
-        filled = {crit for crit in cell.success_criteria if _norm_text(crit) and _norm_text(crit) in blob}
-        cell.status = cell_exhaustion.classify_cell(cell, filled=filled, gated_detected=gated)
+            continue
+        syn = cell_synthesis.synthesize_cell(cell, bundles)
+        gated = any(_gated_signal(s) for b in bundles for s in b.sources)
+        exhausted = any(b.public_exhausted for b in bundles)
+        cell.status = cell_exhaustion.classify_cell(
+            cell, filled=syn.filled, gated_detected=gated, public_exhausted=exhausted)
 
 
 def node_collect(state: GraphState) -> GraphState:
