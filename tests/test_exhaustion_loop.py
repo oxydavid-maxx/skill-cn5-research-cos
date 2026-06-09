@@ -29,3 +29,35 @@ def test_loop_escalates_to_fetch_then_stops(monkeypatch):
     monkeypatch.setattr(real.sdk_client, "call_structured", fake_struct)
     b = real.RealResearcher().research(_state_with_issue(), "I-1")
     assert any("128 kB" in c.claim for c in b.claims)   # the fetched-PDF spec made it into the bundle
+
+
+def test_escalate_stamps_public_exhausted_true_when_drained(monkeypatch):
+    import cn5_research_cos.brains.real as real
+    from cn5_research_cos.models import (ResearchState, TaskGrid, TaskCell,
+        EvidenceBundle, Source, SourceType, SourceQuality)
+    rs = ResearchState(run_id="r", original_question="q", task_grid=TaskGrid())
+    rs.task_grid.cells["NXP|f"] = TaskCell(id="NXP|f", vendor="NXP", spec_group="f",
+        objective="o", success_criteria=["packet_buffer"])
+    src = Source(id="S-NXP|f-0", title="DS", url="https://nxp.com/x.pdf",
+                 source_type=SourceType.primary, quality=SourceQuality.high)
+    bundle = EvidenceBundle(query="q", issue_id="NXP|f", sources=[src])
+    monkeypatch.setattr(real, "fetch_and_extract", lambda url, **kw: ("packet buffer 128 kB", "pymupdf4llm"), raising=False)
+    monkeypatch.setattr(real.RealResearcher, "_extract_from_text",
+        staticmethod(lambda text, sid, criteria=None: ([], [real.FieldObservation(field="packet_buffer", value="128 kB", source_ref=sid)])))
+    out = real.RealResearcher()._escalate(bundle, rs)
+    assert out.public_exhausted is True
+    assert any(o.field == "packet_buffer" for o in out.observations)
+
+
+def test_escalate_no_doc_url_is_vacuously_exhausted(monkeypatch):
+    import cn5_research_cos.brains.real as real
+    from cn5_research_cos.models import (ResearchState, TaskGrid, TaskCell,
+        EvidenceBundle, Source, SourceType, SourceQuality)
+    rs = ResearchState(run_id="r", original_question="q", task_grid=TaskGrid())
+    rs.task_grid.cells["NXP|f"] = TaskCell(id="NXP|f", vendor="NXP", spec_group="f",
+        objective="o", success_criteria=["packet_buffer"])
+    src = Source(id="S1", title="html", url="https://x.com/page.html",
+                 source_type=SourceType.secondary, quality=SourceQuality.medium)
+    bundle = EvidenceBundle(query="q", issue_id="NXP|f", sources=[src])
+    out = real.RealResearcher()._escalate(bundle, rs)
+    assert out.public_exhausted is True   # nothing fetchable -> fetch modality vacuously exhausted

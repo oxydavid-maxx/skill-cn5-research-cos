@@ -23,6 +23,7 @@ import os
 
 from ..artifacts import issue_map
 from ..decision import cell_exhaustion
+from ..decision.cell_synthesis import synthesize_cell
 from ..llm import sdk_client
 from ..models import (Claim, EvidenceBundle, FieldObservation, IssueNode,
                       IssueStatus, IssueType, ReadinessScore, ResearchState,
@@ -370,55 +371,88 @@ class RealResearcher:
         return claims, observations
 
     def _escalate(self, bundle: EvidenceBundle, state: ResearchState) -> EvidenceBundle:
-        """P9 §A (sync) — exhaust the FETCH modality: for each doc/PDF source not yet
-        fetched, download+extract it and re-extract grounded claims into the SAME
-        bundle. Deterministically bounded: stops when no new doc-source remains, a
-        round adds no new claim, or `_max_rounds` is hit."""
+        """P10a — exhaust the FETCH modality, accumulate observations, then stamp
+        bundle.public_exhausted (so classification can PROVE na)."""
+        cell = state.task_grid.cells.get(bundle.issue_id) if getattr(state, "task_grid", None) else None
+        criteria = list(cell.success_criteria) if cell else []
         fetched: set[str] = set()
+        modalities = {"search"}
+        rounds_no_new = 0
         max_rounds = self._max_rounds()
         for _ in range(max_rounds):
             todo = [s for s in bundle.sources if is_doc_url(s.url) and s.id not in fetched]
             if not todo:
-                break  # fetch modality exhausted
-            new_claim = False
+                break
+            new = False
             for s in todo:
                 fetched.add(s.id)
-                text, _backend = fetch_and_extract(
-                    s.url, base_dir="runs", run_id=state.run_id)
+                modalities.add("fetch")
+                text, _backend = fetch_and_extract(s.url, base_dir="runs", run_id=state.run_id)
                 if not text:
                     continue
-                s.excerpt = text[:2000]  # give verbatim verify the source text
-                for c in self._extract_from_text(text, s.id):
-                    bundle.claims.append(c)
-                    new_claim = True
-            if not new_claim:
+                modalities.add("extract")
+                s.excerpt = text[:2000]
+                claims, obs = self._extract_from_text(text, s.id, criteria)
+                for c in claims:
+                    bundle.claims.append(c); new = True
+                for o in obs:
+                    bundle.observations.append(o); new = True
+            if not new:
+                rounds_no_new += 1
                 break
+            rounds_no_new = 0
+        self._stamp_exhausted(bundle, cell, fetched, modalities, rounds_no_new)
         return bundle
+
+    @staticmethod
+    def _stamp_exhausted(bundle, cell, fetched, modalities, rounds_no_new) -> None:
+        drained = not [s for s in bundle.sources if is_doc_url(s.url) and s.id not in fetched]
+        if drained:
+            modalities = modalities | {"fetch", "extract"}
+        if cell is None:
+            bundle.public_exhausted = drained
+            return
+        filled = synthesize_cell(cell, [bundle]).filled
+        bundle.public_exhausted = cell_exhaustion.public_exhausted(
+            cell, filled=filled, modalities_tried=modalities,
+            all_modalities={"search", "fetch", "extract"}, rounds_no_new=rounds_no_new)
 
     async def _escalate_async(self, bundle: EvidenceBundle,
                               state: ResearchState) -> EvidenceBundle:
         """Async mirror of ``_escalate`` — the blocking fetch+extract and the
         (asyncio.run-based) extraction pass run via ``to_thread`` so they never
-        block or nest the running event loop."""
+        block or nest the running event loop. Stamps public_exhausted identically."""
+        cell = state.task_grid.cells.get(bundle.issue_id) if getattr(state, "task_grid", None) else None
+        criteria = list(cell.success_criteria) if cell else []
         fetched: set[str] = set()
+        modalities = {"search"}
+        rounds_no_new = 0
         max_rounds = self._max_rounds()
         for _ in range(max_rounds):
             todo = [s for s in bundle.sources if is_doc_url(s.url) and s.id not in fetched]
             if not todo:
                 break
-            new_claim = False
+            new = False
             for s in todo:
                 fetched.add(s.id)
+                modalities.add("fetch")
                 text, _backend = await asyncio.to_thread(
                     fetch_and_extract, s.url, base_dir="runs", run_id=state.run_id)
                 if not text:
                     continue
+                modalities.add("extract")
                 s.excerpt = text[:2000]
-                for c in await asyncio.to_thread(self._extract_from_text, text, s.id):
-                    bundle.claims.append(c)
-                    new_claim = True
-            if not new_claim:
+                claims, obs = await asyncio.to_thread(
+                    self._extract_from_text, text, s.id, criteria)
+                for c in claims:
+                    bundle.claims.append(c); new = True
+                for o in obs:
+                    bundle.observations.append(o); new = True
+            if not new:
+                rounds_no_new += 1
                 break
+            rounds_no_new = 0
+        self._stamp_exhausted(bundle, cell, fetched, modalities, rounds_no_new)
         return bundle
 
     def research(self, state: ResearchState, issue_id: str) -> EvidenceBundle:
