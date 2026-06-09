@@ -517,13 +517,13 @@ def _gated_signal(src) -> bool:
 
 
 def classify_grid_cells(rs: ResearchState) -> None:
-    """P10a — deterministic per-cell status from the structured observations.
-    synthesize_cell (grade + triangulate) computes `filled`; the loop's
-    bundle.public_exhausted proves whether `na` is allowed. Cells with no evidence
-    are left untouched (still open)."""
+    """P10a/P10b — deterministic per-cell status from observations, plus delta
+    bookkeeping (last_status/last_filled/stalled_cycles) and a per-cycle
+    `grid_moved` list for the dashboard. Cells with no evidence are left untouched."""
     grid = rs.task_grid
     if grid is None:
         return
+    moved: list[str] = []
     for cell in grid.cells.values():
         bundles = [b for b in rs.evidence if b.issue_id == cell.id]
         if not bundles:
@@ -531,8 +531,17 @@ def classify_grid_cells(rs: ResearchState) -> None:
         syn = cell_synthesis.synthesize_cell(cell, bundles)
         gated = any(_gated_signal(s) for b in bundles for s in b.sources)
         exhausted = any(b.public_exhausted for b in bundles)
-        cell.status = cell_exhaustion.classify_cell(
+        new_status = cell_exhaustion.classify_cell(
             cell, filled=syn.filled, gated_detected=gated, public_exhausted=exhausted)
+        new_filled = len(syn.filled)
+        changed = (new_status != cell.last_status) or (new_filled != cell.last_filled)
+        cell.status = new_status
+        cell.stalled_cycles = 0 if changed else cell.stalled_cycles + 1
+        cell.last_status = new_status
+        cell.last_filled = new_filled
+        if changed:
+            moved.append(cell.id)
+    rs.obs_prev["grid_moved"] = moved
 
 
 def node_collect(state: GraphState) -> GraphState:
