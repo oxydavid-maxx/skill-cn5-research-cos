@@ -156,6 +156,14 @@ class StageReporter:
 # Albert's FULL output (every challenge, no slicing/truncation) because that is
 # the debate core the colleague most needs to watch.
 # --------------------------------------------------------------------------- #
+def _delta_count(state, key: str, current: int) -> int:
+    """current minus the value stored under obs_prev[key]; updates the store.
+    Used by per-stage cards to show 'what changed since I last rendered'."""
+    prev = (state.obs_prev or {}).get(key, 0)
+    state.obs_prev[key] = current
+    return current - prev
+
+
 def _first_line(text: str, limit: int = 120) -> str:
     """The first non-empty line of a (possibly multi-line) text, length-clamped —
     used ONLY for the scope/brief one-liners, never for Albert's challenges."""
@@ -175,48 +183,59 @@ def render_scope(state: "ResearchState") -> str:
 
 
 def render_expand(state: "ResearchState") -> str:
-    """expand — N issues + the top issue titles (by impact)."""
+    """expand — DELTA: +N new issues since last render (lead) + the top issue titles
+    (by impact). '本站無動作' when no new issues were added this cycle."""
+    d = _delta_count(state, "expand_n", len(state.issue_map))
+    if d <= 0:
+        return "本站無動作"
     issues = sorted(state.issue_map.values(), key=lambda n: n.impact, reverse=True)
-    lines = [f"{len(issues)} issues"]
+    lines = [f"+{d} issues"]
     for n in issues[:6]:
         lines.append(f"  • [{n.issue_type.value} impact={n.impact}] {n.title}")
-    if len(issues) > 6:
-        lines.append(f"  … +{len(issues) - 6} more")
     return "\n".join(lines)
 
 
 def render_research(state: "ResearchState") -> str:
-    """research — per researched issue: a 1-line finding + its top source. Shows the
-    most recent few bundles (KEY info, not the whole evidence history)."""
-    if not state.evidence:
-        return "(no evidence yet)"
-    lines = []
-    for b in state.evidence[-3:]:
-        top_claim = b.claims[0].claim if b.claims else "(no claim)"
-        top_src = b.sources[0].title if b.sources else "(no source)"
-        lines.append(f"  • {b.query}: {top_claim}  [src: {top_src}]")
+    """research — DELTA: +N new evidence bundles since last render (lead) + a 1-line
+    finding per NEW bundle. '本站無動作' when no new evidence arrived this cycle."""
+    d = _delta_count(state, "research_n", len(state.evidence))
+    if d <= 0:
+        return "本站無動作"
+    lines = [f"+{d} evidence"]
+    for b in state.evidence[-d:]:
+        top = b.claims[0].claim if b.claims else "(no claim)"
+        lines.append(f"  • {b.query}: {top}")
     return "\n".join(lines)
 
 
 def render_critique(state: "ResearchState") -> str:
-    """critique / skeptic — the counterarguments raised this round (deduped)."""
+    """critique / skeptic — DELTA: +N new counterarguments since last render (lead),
+    deduped. '本站無動作' when no new counterargument was raised this cycle."""
     seen: list[str] = []
     for n in state.issue_map.values():
         for c in n.counterarguments:
             if c not in seen:
                 seen.append(c)
-    if not seen:
-        return "(no counterarguments)"
-    lines = [f"{len(seen)} counterargument(s):"]
-    for c in seen[:6]:
+    d = _delta_count(state, "critique_n", len(seen))
+    if d <= 0:
+        return "本站無動作"
+    lines = [f"+{d} 反論"]
+    for c in seen[-d:]:
         lines.append(f"  • {c}")
-    if len(seen) > 6:
-        lines.append(f"  … +{len(seen) - 6} more")
     return "\n".join(lines)
 
 
 def render_albert(audit: "AuditResult") -> str:
-    """albert_audit — Albert's FULL output (the debate core, NOT truncated).
+    """albert_audit — a one-line DELTA summary PREFIX (verdict + challenge count)
+    followed by Albert's FULL body. The prefix gives a colleague the headline at a
+    glance; the body (``_render_albert_body``) is kept intact (NOT truncated)."""
+    body = _render_albert_body(audit)
+    n = len(audit.challenges)
+    return f"verdict {audit.verdict.value} · {n} challenge(s)\n{body}"
+
+
+def _render_albert_body(audit: "AuditResult") -> str:
+    """Albert's FULL output (the debate core, NOT truncated).
 
     Shows EVERY ``AlbertChallenge`` (challenge text + why_albert_would_ask +
     status + current_answer if any), then verdict + premature_end_risk +
@@ -247,24 +266,15 @@ def render_albert(audit: "AuditResult") -> str:
 
 
 def render_convergence(state: "ResearchState") -> str:
-    """convergence — resolved N / open M this round + which challenge ids resolved
-    (the debate progressing toward 0 open)."""
-    from ..decision import convergence
+    """convergence — DELTA: the open-challenge count MOVE since last render. Shows the
+    current open count + the signed change (↓ fewer open = progress, ↑ more open,
+    → no change). Reads the real ``convergence.unresolved_challenges`` API."""
+    from ..decision import convergence as _c
 
-    resolved = convergence.resolved_count(state)
-    open_n = convergence.open_count(state)
-    escalated = convergence.escalated_count(state)
-    resolved_ids = [
-        c.id for c in state.albert_challenge_map.values()
-        if c.status.value == "resolved"
-    ]
-    open_ids = [c.id for c in convergence.unresolved_challenges(state)]
-    lines = [f"resolved {resolved} / open {open_n} / escalated-to-human {escalated}"]
-    if resolved_ids:
-        lines.append(f"  resolved: {', '.join(resolved_ids)}")
-    if open_ids:
-        lines.append(f"  still open: {', '.join(open_ids)}")
-    return "\n".join(lines)
+    open_n = len(_c.unresolved_challenges(state))
+    d = _delta_count(state, "convergence_open", open_n)
+    arrow = "→" if d == 0 else ("↓" if d < 0 else "↑")
+    return f"open challenges {arrow} {open_n}" + (f" ({d:+d})" if d else " (no change)")
 
 
 def render_readiness(score: "ReadinessScore") -> str:

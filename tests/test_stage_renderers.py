@@ -99,18 +99,24 @@ def test_render_readiness_shows_four_scores_and_reason():
     assert "True" in txt or "continue" in txt.lower()
 
 
-def test_render_convergence_shows_resolved_and_open_counts():
+def test_render_convergence_shows_open_count_delta():
+    """P10b: render_convergence is now DELTA-based — it leads with the open-challenge
+    count MOVE since the last render, not a resolved/open snapshot. First render
+    shows open=2 with a +2 rise from the implicit 0 baseline; a second render with
+    no change shows the same open count and 'no change'."""
     rs = ResearchState(run_id="r", original_question="q")
     rs.albert_challenge_map = {
         "C-1": AlbertChallenge(id="C-1", challenge="a", status=ChallengeStatus.resolved, confidence=4),
         "C-2": AlbertChallenge(id="C-2", challenge="b", status=ChallengeStatus.open, confidence=5),
         "C-3": AlbertChallenge(id="C-3", challenge="c", status=ChallengeStatus.open, confidence=3),
     }
-    txt = render_convergence(rs)
-    # resolved 1 / open 2
-    assert "1" in txt and "2" in txt
-    assert "resolved" in txt.lower() or "已解" in txt
-    assert "open" in txt.lower() or "未解" in txt
+    first = render_convergence(rs)
+    # open count is 2 (resolved one is not "open"); delta from baseline 0 is +2.
+    assert "open challenges" in first
+    assert "2" in first and "+2" in first
+    # No movement on a second render -> same open count, "no change".
+    second = render_convergence(rs)
+    assert "2" in second and "no change" in second
 
 
 def test_render_scope_concise():
